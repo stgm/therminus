@@ -27,6 +27,16 @@ FAILSAFE_WINDOW  = 3 * 60 * 60  # seconds — rolling window for avg (3h)
 FAILSAFE_DELTA   = 2.0          # °C — max deviation from rolling avg
 HISTORY_POINTS   = 1440         # room temp history points to keep
 
+# Signed-square penalty: pushes target further from setpoint the larger the error.
+# error > 0 (cold room) → target goes UP extra to heat faster
+# error < 0 (warm room) → target goes DOWN extra to drain the pump's water-temp integral
+# penalty = α * error * |error|
+# At ±1°C error → ±0.10°C extra (α=0.10)
+# At ±2°C error → ±0.40°C extra
+# At ±3°C error → ±0.90°C extra
+# Set to 0.0 to disable.
+PENALTY_ALPHA    = 0.10
+
 # ── Shared state ──────────────────────────────────────────────────────────────
 state_lock       = threading.Lock()
 current_temp     = None          # latest room temp received
@@ -96,8 +106,13 @@ def _apply_control(room_temp: float) -> dict:
 
     now = datetime.now()
 
-    # Formula: mirror around setpoint
-    raw_target = SETPOINT + (SETPOINT - room_temp)
+    # Formula: mirror around setpoint + signed-square penalty
+    # error > 0 (room cold) → target pushed UP   to heat faster
+    # error < 0 (room warm) → target pushed DOWN  to kill the pump's water-temp integral
+    # penalty = α * error * |error|  (same as α * error², but preserves sign)
+    error = SETPOINT - room_temp
+    penalty = PENALTY_ALPHA * abs(error) * error
+    raw_target = SETPOINT + error + penalty
     raw_target = round(raw_target, 1)
 
     # Failsafe: clamp to ±FAILSAFE_DELTA of rolling average
