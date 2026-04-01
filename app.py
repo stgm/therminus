@@ -19,7 +19,7 @@ from flask import Flask, Response, render_template_string, jsonify, request
 app = Flask(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-EBUSD_HOST       = "192.168.178.27"
+EBUSD_HOST       = "127.0.0.1"
 EBUSD_PORT       = 8888
 SETPOINT         = 20.0          # °C — mirror point for the formula
 UPDATE_INTERVAL  = 10 * 60      # seconds between writes to ebusd
@@ -243,7 +243,12 @@ UI_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Thermostat">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f1117">
 <title>Thermostat</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -267,29 +272,30 @@ UI_HTML = r"""<!DOCTYPE html>
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
+  html {
+    height: 100%;
+  }
+
   html, body {
     background: var(--bg);
     font-family: var(--sans);
     color: var(--text);
-    min-height: 100vh;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
 
   body {
+    min-height: 100%;
+    min-height: 100dvh;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    padding: 0 0 40px 0;
-    max-width: 480px;
-    margin: 0 auto;
+    justify-content: center;
+    padding: env(safe-area-inset-top, 16px) env(safe-area-inset-right, 16px) env(safe-area-inset-bottom, 16px) env(safe-area-inset-left, 16px);
   }
 
-  /* ═══════════════════════════════════════════
-     FLIP WIDGET CONTAINER
-  ═══════════════════════════════════════════ */
   .widget-scene {
     width: 100%;
+    max-width: 420px;
     perspective: 1200px;
   }
 
