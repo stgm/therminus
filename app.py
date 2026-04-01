@@ -163,9 +163,10 @@ def post_roomtemp():
     if raw is None:
         return jsonify({"error": "missing 'current' param"}), 400
 
-    # Normalise comma decimal separator
+    # Normalise: strip unit suffix, whitespace, replace comma decimal separator
     try:
-        value = float(str(raw).replace(',', '.'))
+        cleaned = re.sub(r'[^\d,\.\-]', '', str(raw)).replace(',', '.')
+        value = float(cleaned)
     except ValueError:
         return jsonify({"error": "invalid value"}), 400
 
