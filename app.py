@@ -97,11 +97,20 @@ def _uv_to_sentence(max_uv, is_tomorrow: bool) -> str:
     if max_uv < 9:  return f'{when} is bright and sunny — good passive solar warmth expected.'
     return f'{when} will be very sunny — the house should warm up nicely on its own.'
 
+import ssl
+_ssl_ctx = ssl.create_default_context()
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
+
 def _fetch_url(url: str, headers: dict | None = None) -> dict | None:
     try:
         req = urllib.request.Request(url, headers=headers or {})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as resp:
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors='replace')
+        print(f'[thermostat] HTTP {e.code} from {url}: {body[:500]}')
+        return None
     except Exception as e:
         print(f'[thermostat] fetch error {url}: {e}')
         return None
