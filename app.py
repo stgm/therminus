@@ -294,7 +294,8 @@ def _apply_control(room_temp: float) -> dict:
     if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
         remaining = UPDATE_INTERVAL - (now - last_write_time).total_seconds()
         last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
-                       f"→ {clamped}°C  (next write in {int(remaining)}s)")
+                       f"raw→{raw_target}  clamped→{clamped}°C  avg={avg}  "
+                       f"(next write in {int(remaining)}s)")
         return {"target": clamped, "wrote": False,
                 "failsafe": failsafe_active, "avg": avg,
                 "integral": pi_integral}
@@ -307,7 +308,7 @@ def _apply_control(room_temp: float) -> dict:
         target_history.append((now, clamped))
         fs_note = " [failsafe]" if failsafe_active else ""
         last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
-                       f"→ wrote {clamped}°C{fs_note}")
+                       f"raw→{raw_target}  clamped→{clamped}°C  avg={avg}{fs_note}")
         return {"target": clamped, "wrote": True,
                 "failsafe": failsafe_active, "avg": avg,
                 "integral": pi_integral}
