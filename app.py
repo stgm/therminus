@@ -107,10 +107,11 @@ def _fetch_url(url: str, headers: dict | None = None) -> dict | None:
         req = urllib.request.Request(url, headers=headers or {})
         with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as resp:
             raw = resp.read()
-            if resp.info().get('Content-Encoding') == 'gzip':
-                import gzip
-                raw = gzip.decompress(raw)
-            return json.loads(raw.decode())
+        # Decompress if gzip (magic bytes 1f 8b) regardless of Content-Encoding header
+        if raw[:2] == b'\x1f\x8b':
+            import gzip
+            raw = gzip.decompress(raw)
+        return json.loads(raw.decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors='replace')
         print(f'[thermostat] HTTP {e.code} from {url}: {body[:500]}')
