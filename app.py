@@ -25,7 +25,7 @@ app = Flask(__name__)
 EBUSD_HOST       = "127.0.0.1"
 EBUSD_PORT       = 8888
 SETPOINT         = 20.5          # °C — desired room temperature
-UPDATE_INTERVAL  = 10 * 60      # seconds between writes to ebusd
+UPDATE_INTERVAL  = 60            # seconds — matches integral tick rate so pump gets fresh nudge every minute
 FAILSAFE_WINDOW  = 3 * 60 * 60  # seconds — rolling window for avg (3h)
 FAILSAFE_DELTA   = 2.0          # °C — max deviation from rolling avg
 HISTORY_POINTS   = 1440         # room temp history points to keep
@@ -187,14 +187,26 @@ def _refresh_uv():
     print(f'[therminus] UV refreshed: {sentence}')
 
 def _tick_integral():
-    """Accumulate the PI integral using the latest room temp. Called every CONTROL_DT seconds."""
+    """Accumulate PI integral and write updated target to ebusd. Called every CONTROL_DT seconds."""
     global pi_integral
     with state_lock:
         if current_temp is None:
             return
         error = SETPOINT - current_temp
         pi_integral = max(-MAX_INTEGRAL, min(MAX_INTEGRAL, pi_integral + error * CONTROL_DT))
-    print(f"[therminus] integral tick: error={SETPOINT - current_temp:+.2f}  ∫={pi_integral:.1f}")
+        print(f"[therminus] integral tick: error={error:+.2f}  ∫={pi_integral:.1f}")
+        result = _compute_and_write(current_temp)
+
+    _broadcast(json.dumps({
+        "type": "update",
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "room_temp": current_temp,
+        "target": result["target"],
+        "wrote": result["wrote"],
+        "failsafe": result["failsafe"],
+        "avg": result.get("avg"),
+        "status": last_status,
+    }))
 
 
 def _background_refresh():
@@ -265,22 +277,20 @@ def _prune_target_history():
         target_history.popleft()
 
 
-def _apply_control(room_temp: float) -> dict:
+def _compute_and_write(room_temp: float) -> dict:
     """
-    Compute the PI target, apply failsafe, decide whether to write.
-    The integral is stepped separately by _tick_integral() every CONTROL_DT seconds.
-    Returns a status dict.
+    Compute PI target from room_temp, apply failsafe, write to ebusd if interval elapsed.
+    Called both from sensor POSTs and from the background integral tick.
+    Must be called with state_lock held.
     """
     global last_write_time, last_target, last_status
 
     now = datetime.now()
 
-    # PI controller output (integral already accumulated by background tick)
-    error     = SETPOINT - room_temp
-    nudge     = (KP * error) + (KI * pi_integral)
+    error      = SETPOINT - room_temp
+    nudge      = (KP * error) + (KI * pi_integral)
     raw_target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + nudge)), 1)
 
-    # Failsafe: clamp to ±FAILSAFE_DELTA of rolling average
     _prune_target_history()
     avg = _rolling_avg_target()
     if avg is not None:
@@ -290,17 +300,14 @@ def _apply_control(room_temp: float) -> dict:
         clamped = raw_target
         failsafe_active = False
 
-    # Rate limit: once per UPDATE_INTERVAL
     if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
         remaining = UPDATE_INTERVAL - (now - last_write_time).total_seconds()
         last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
                        f"raw→{raw_target}  clamped→{clamped}°C  avg={avg}  "
                        f"(next write in {int(remaining)}s)")
         return {"target": clamped, "wrote": False,
-                "failsafe": failsafe_active, "avg": avg,
-                "integral": pi_integral}
+                "failsafe": failsafe_active, "avg": avg, "integral": pi_integral}
 
-    # Write to ebusd
     try:
         _run_async(_write_target(clamped))
         last_write_time = now
@@ -310,14 +317,18 @@ def _apply_control(room_temp: float) -> dict:
         last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
                        f"raw→{raw_target}  clamped→{clamped}°C  avg={avg}{fs_note}")
         return {"target": clamped, "wrote": True,
-                "failsafe": failsafe_active, "avg": avg,
-                "integral": pi_integral}
+                "failsafe": failsafe_active, "avg": avg, "integral": pi_integral}
     except Exception as e:
         last_status = f"Error writing target: {e}"
         print(f"[therminus] write error: {e}")
         return {"target": clamped, "wrote": False,
                 "failsafe": failsafe_active, "avg": avg,
                 "integral": pi_integral, "error": str(e)}
+
+
+def _apply_control(room_temp: float) -> dict:
+    """Called on sensor POST — delegates to _compute_and_write. Lock must be held by caller."""
+    return _compute_and_write(room_temp)
 
 
 # ── SSE broadcast ──────────────────────────────────────────────────────────────
