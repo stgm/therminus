@@ -4,8 +4,7 @@ Receives room temperature, computes a corrected TargetTempHc and writes it
 to ebusd via pyebus. Presents a mobile-first UI.
 
 Formula:  PI controller — nudge = Kp*error + Ki*integral
-Failsafe: target clamped to ±2°C of the 3-hour rolling average of past targets.
-Update:   at most once per 10 minutes.
+Update:   every CONTROL_DT seconds via background thread.
 Port:     6790
 """
 import asyncio
@@ -26,8 +25,6 @@ EBUSD_HOST       = "127.0.0.1"
 EBUSD_PORT       = 8888
 SETPOINT         = 20.5          # °C — desired room temperature
 UPDATE_INTERVAL  = 60            # seconds — matches integral tick rate so pump gets fresh nudge every minute
-FAILSAFE_WINDOW  = 3 * 60 * 60  # seconds — rolling window for avg (3h)
-FAILSAFE_DELTA   = 2.0          # °C — max deviation from rolling avg
 HISTORY_POINTS   = 1440         # room temp history points to keep
 
 # ── PI controller ──────────────────────────────────────────────────────────────
@@ -55,7 +52,6 @@ UV_INTERVAL      = 5 * 60 * 60  # seconds between UV index refreshes
 # ── Shared state ──────────────────────────────────────────────────────────────
 state_lock       = threading.Lock()
 current_temp     = None          # latest room temp received
-target_history   = deque()       # deque of (datetime, target_value) tuples
 room_history     = deque(maxlen=HISTORY_POINTS)  # {ts, value} for chart
 last_write_time  = None          # datetime of last ebusd write
 last_target      = None          # last target value written
@@ -193,7 +189,18 @@ def _tick_integral():
         if current_temp is None:
             return
         error = SETPOINT - current_temp
-        pi_integral = max(-MAX_INTEGRAL, min(MAX_INTEGRAL, pi_integral + error * CONTROL_DT))
+        new_integral = pi_integral + error * CONTROL_DT
+
+        # Anti-windup: don't let the integral push in the opposite direction to the error.
+        # If error ≤ 0 (room at/above setpoint), cap integral at 0 so accumulated
+        # heating history can't keep the target elevated.
+        # If error ≥ 0 (room at/below setpoint), cap integral at 0 from below.
+        if error <= 0:
+            new_integral = min(new_integral, 0.0)
+        else:
+            new_integral = max(new_integral, 0.0)
+
+        pi_integral = max(-MAX_INTEGRAL, min(MAX_INTEGRAL, new_integral))
         print(f"[therminus] integral tick: error={error:+.2f}  ∫={pi_integral:.1f}")
         result = _compute_and_write(current_temp)
 
@@ -203,8 +210,6 @@ def _tick_integral():
         "room_temp": current_temp,
         "target": result["target"],
         "wrote": result["wrote"],
-        "failsafe": result["failsafe"],
-        "avg": result.get("avg"),
         "status": last_status,
     }))
 
@@ -263,67 +268,36 @@ def _start_async_loop():
 
 
 # ── Control logic ──────────────────────────────────────────────────────────────
-def _rolling_avg_target() -> float | None:
-    """Average of TargetTempHc values written in the past FAILSAFE_WINDOW seconds."""
-    cutoff = datetime.now() - timedelta(seconds=FAILSAFE_WINDOW)
-    recent = [v for ts, v in target_history if ts >= cutoff]
-    return sum(recent) / len(recent) if recent else None
-
-
-def _prune_target_history():
-    """Remove entries older than FAILSAFE_WINDOW."""
-    cutoff = datetime.now() - timedelta(seconds=FAILSAFE_WINDOW)
-    while target_history and target_history[0][0] < cutoff:
-        target_history.popleft()
-
-
 def _compute_and_write(room_temp: float) -> dict:
     """
-    Compute PI target from room_temp, apply failsafe, write to ebusd if interval elapsed.
+    Compute PI target from room_temp and write to ebusd if interval elapsed.
     Called both from sensor POSTs and from the background integral tick.
     Must be called with state_lock held.
     """
     global last_write_time, last_target, last_status
 
-    now = datetime.now()
-
-    error      = SETPOINT - room_temp
-    nudge      = (KP * error) + (KI * pi_integral)
-    raw_target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + nudge)), 1)
-
-    _prune_target_history()
-    avg = _rolling_avg_target()
-    if avg is not None:
-        clamped = round(max(avg - FAILSAFE_DELTA, min(avg + FAILSAFE_DELTA, raw_target)), 1)
-        failsafe_active = clamped != raw_target
-    else:
-        clamped = raw_target
-        failsafe_active = False
+    now    = datetime.now()
+    error  = SETPOINT - room_temp
+    nudge  = (KP * error) + (KI * pi_integral)
+    target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + nudge)), 1)
 
     if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
         remaining = UPDATE_INTERVAL - (now - last_write_time).total_seconds()
         last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
-                       f"raw→{raw_target}  clamped→{clamped}°C  avg={avg}  "
-                       f"(next write in {int(remaining)}s)")
-        return {"target": clamped, "wrote": False,
-                "failsafe": failsafe_active, "avg": avg, "integral": pi_integral}
+                       f"→ {target}°C  (next write in {int(remaining)}s)")
+        return {"target": target, "wrote": False}
 
     try:
-        _run_async(_write_target(clamped))
+        _run_async(_write_target(target))
         last_write_time = now
-        last_target = clamped
-        target_history.append((now, clamped))
-        fs_note = " [failsafe]" if failsafe_active else ""
+        last_target = target
         last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
-                       f"raw→{raw_target}  clamped→{clamped}°C  avg={avg}{fs_note}")
-        return {"target": clamped, "wrote": True,
-                "failsafe": failsafe_active, "avg": avg, "integral": pi_integral}
+                       f"→ wrote {target}°C")
+        return {"target": target, "wrote": True}
     except Exception as e:
         last_status = f"Error writing target: {e}"
         print(f"[therminus] write error: {e}")
-        return {"target": clamped, "wrote": False,
-                "failsafe": failsafe_active, "avg": avg,
-                "integral": pi_integral, "error": str(e)}
+        return {"target": target, "wrote": False, "error": str(e)}
 
 
 def _apply_control(room_temp: float) -> dict:
@@ -381,8 +355,6 @@ def post_roomtemp():
         "room_temp": value,
         "target": result["target"],
         "wrote": result["wrote"],
-        "failsafe": result["failsafe"],
-        "avg": result.get("avg"),
         "status": last_status,
     }))
 
@@ -799,14 +771,6 @@ UI_HTML = r"""<!DOCTYPE html>
           <div class="chip-val" id="info-write">—</div>
         </div>
         <div class="chip">
-          <div class="chip-label">3h avg target</div>
-          <div class="chip-val" id="info-avg">—</div>
-        </div>
-        <div class="chip">
-          <div class="chip-label">Failsafe</div>
-          <div class="chip-val ok" id="info-failsafe">—</div>
-        </div>
-        <div class="chip">
           <div class="chip-label">Next write</div>
           <div class="chip-val" id="info-next">—</div>
         </div>
@@ -906,19 +870,12 @@ function applyState(msg) {
   if (msg.status) {
     document.getElementById('status-text').textContent = msg.status;
     document.getElementById('status-dot').className =
-      'status-dot ' + (msg.wrote ? 'ok' : msg.failsafe ? 'warn' : '');
+      'status-dot ' + (msg.wrote ? 'ok' : '');
   }
   if (msg.last_write) {
     lastWriteTime = new Date(msg.last_write.replace('T',' '));
     document.getElementById('info-write').textContent =
       lastWriteTime.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
-  }
-  if (msg.avg != null)
-    document.getElementById('info-avg').textContent = msg.avg.toFixed(1) + '°C';
-  if (msg.failsafe != null) {
-    const el = document.getElementById('info-failsafe');
-    el.textContent = msg.failsafe ? 'ACTIVE' : 'OK';
-    el.className = 'chip-val ' + (msg.failsafe ? 'err' : 'ok');
   }
 }
 
