@@ -106,7 +106,11 @@ def _fetch_url(url: str, headers: dict | None = None) -> dict | None:
     try:
         req = urllib.request.Request(url, headers=headers or {})
         with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as resp:
-            return json.loads(resp.read().decode())
+            raw = resp.read()
+            if resp.info().get('Content-Encoding') == 'gzip':
+                import gzip
+                raw = gzip.decompress(raw)
+            return json.loads(raw.decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors='replace')
         print(f'[thermostat] HTTP {e.code} from {url}: {body[:500]}')
@@ -144,7 +148,18 @@ def _refresh_uv():
     params = urllib.parse.urlencode({'latitude': LATITUDE, 'longitude': LONGITUDE})
     d = _fetch_url(
         f'https://uvindexapi.com/api/v1/forecast?{params}',
-        headers={'Accept': 'application/json'},
+        headers={
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+            'Referer': 'https://uvindexapi.com/',
+            'Origin': 'https://uvindexapi.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'Connection': 'keep-alive',
+        },
     )
     if not d or not d.get('ok'):
         return
