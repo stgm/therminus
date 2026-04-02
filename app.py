@@ -1,9 +1,9 @@
 """
-Thermostat Controller
+Therminus Controller
 Receives room temperature, computes a corrected TargetTempHc and writes it
-to ebusd via pyebus. Presents a retro Mac-style thermostat UI.
+to ebusd via pyebus. Presents a mobile-first UI.
 
-Formula:  target = 20 + (20 - current_room_temp)
+Formula:  PI controller — nudge = Kp*error + Ki*integral
 Failsafe: target clamped to ±2°C of the 3-hour rolling average of past targets.
 Update:   at most once per 10 minutes.
 Port:     6790
@@ -24,21 +24,27 @@ app = Flask(__name__)
 # ── Configuration ─────────────────────────────────────────────────────────────
 EBUSD_HOST       = "127.0.0.1"
 EBUSD_PORT       = 8888
-SETPOINT         = 20.0          # °C — mirror point for the formula
+SETPOINT         = 20.0          # °C — desired room temperature
 UPDATE_INTERVAL  = 10 * 60      # seconds between writes to ebusd
 FAILSAFE_WINDOW  = 3 * 60 * 60  # seconds — rolling window for avg (3h)
 FAILSAFE_DELTA   = 2.0          # °C — max deviation from rolling avg
 HISTORY_POINTS   = 1440         # room temp history points to keep
 
-# Signed-square penalty: pushes target further from setpoint the larger the error.
-# error > 0 (cold room) → target goes UP extra to heat faster
-# error < 0 (warm room) → target goes DOWN extra to drain the pump's water-temp integral
-# penalty = α * error * |error|
-# At ±1°C error → ±0.10°C extra (α=0.10)
-# At ±2°C error → ±0.40°C extra
-# At ±3°C error → ±0.90°C extra
-# Set to 0.0 to disable.
-PENALTY_ALPHA    = 0.10
+# ── PI controller ──────────────────────────────────────────────────────────────
+# nudge = Kp * error + Ki * integral
+# fake_setpoint = clamp(SETPOINT + nudge, TARGET_MIN, TARGET_MAX)
+#
+# Kp: proportional gain — 1.0 means 1°C error → 1°C nudge (same as old mirror)
+# Ki: integral gain    — accumulates error over time; tiny value, works over hours
+#     at Ki=0.001 and dt=60: 1°C error for 1 hour → integral nudge of 3.6°C
+# MAX_INTEGRAL: clamp on the integral term itself (in °C·s) to prevent windup
+#     default 3600 → caps integral contribution at Ki*3600 = 3.6°C nudge
+KP               = 1.0
+KI               = 0.001
+MAX_INTEGRAL     = 3600.0        # °C·s — anti-windup clamp
+TARGET_MIN       = 16.0          # °C — never send lower than this
+TARGET_MAX       = 24.0          # °C — never send higher than this
+CONTROL_DT       = 60            # seconds — integral tick rate
 
 # ── External API config ────────────────────────────────────────────────────────
 LATITUDE         = "52.3"
@@ -55,6 +61,7 @@ last_write_time  = None          # datetime of last ebusd write
 last_target      = None          # last target value written
 last_status      = "Waiting for room temperature…"
 sse_clients      = []
+pi_integral      = 0.0           # accumulated integral term (°C·s)
 
 # ── External data cache ────────────────────────────────────────────────────────
 weather_cache    = None   # dict: {icon, desc, fetched_at}
@@ -114,10 +121,10 @@ def _fetch_url(url: str, headers: dict | None = None) -> dict | None:
         return json.loads(raw.decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors='replace')
-        print(f'[thermostat] HTTP {e.code} from {url}: {body[:500]}')
+        print(f'[therminus] HTTP {e.code} from {url}: {body[:500]}')
         return None
     except Exception as e:
-        print(f'[thermostat] fetch error {url}: {e}')
+        print(f'[therminus] fetch error {url}: {e}')
         return None
 
 def _refresh_weather():
@@ -142,7 +149,7 @@ def _refresh_weather():
     desc_str = f"{desc} · {outside_temp:.1f}°C outside" if outside_temp is not None else desc
     weather_cache = {'icon': icon, 'desc': desc_str, 'fetched_at': time.time()}
     _broadcast(json.dumps({'type': 'weather', 'icon': icon, 'desc': desc_str}))
-    print(f'[thermostat] weather refreshed: {icon} {desc_str}')
+    print(f'[therminus] weather refreshed: {icon} {desc_str}')
 
 def _refresh_uv():
     global uv_cache
@@ -177,26 +184,39 @@ def _refresh_uv():
         'fetched_at': time.time(),
     }
     _broadcast(json.dumps({'type': 'uv', 'sun_sentence': sentence}))
-    print(f'[thermostat] UV refreshed: {sentence}')
+    print(f'[therminus] UV refreshed: {sentence}')
+
+def _tick_integral():
+    """Accumulate the PI integral using the latest room temp. Called every CONTROL_DT seconds."""
+    global pi_integral
+    with state_lock:
+        if current_temp is None:
+            return
+        error = SETPOINT - current_temp
+        pi_integral = max(-MAX_INTEGRAL, min(MAX_INTEGRAL, pi_integral + error * CONTROL_DT))
+    print(f"[therminus] integral tick: error={SETPOINT - current_temp:+.2f}  ∫={pi_integral:.1f}")
+
 
 def _background_refresh():
-    """Periodically refresh weather and UV; re-evaluate UV sentence after 19:00."""
-    last_weather = 0.0
-    last_uv      = 0.0
-    last_hour    = -1
+    """Periodically refresh weather, UV, and step the PI integral."""
+    last_weather  = 0.0
+    last_uv       = 0.0
+    last_integral = 0.0
+    last_hour     = -1
     while True:
         now  = time.time()
         hour = datetime.now().hour
-        # Weather: every WEATHER_INTERVAL
         if now - last_weather >= WEATHER_INTERVAL:
             _refresh_weather()
             last_weather = now
-        # UV: every UV_INTERVAL, but also recompute sentence at 19:00 rollover
         if now - last_uv >= UV_INTERVAL or (hour >= 19 > last_hour):
             _refresh_uv()
             last_uv = now
+        if now - last_integral >= CONTROL_DT:
+            _tick_integral()
+            last_integral = now
         last_hour = hour
-        time.sleep(60)
+        time.sleep(10)   # wake every 10s so integral ticks are timely
 
 
 # ── pyebus helpers ─────────────────────────────────────────────────────────────
@@ -213,9 +233,9 @@ async def _write_target(target: float):
     for msgdef in ebus.msgdefs:
         if msgdef.name.lower() == "targettemphc":
             await ebus.async_write(msgdef, target)
-            print(f"[thermostat] wrote TargetTempHc = {target}")
+            print(f"[therminus] wrote TargetTempHc = {target}")
             return
-    print("[thermostat] WARNING: TargetTempHc msgdef not found")
+    print("[therminus] WARNING: TargetTempHc msgdef not found")
 
 
 def _run_async(coro):
@@ -247,21 +267,18 @@ def _prune_target_history():
 
 def _apply_control(room_temp: float) -> dict:
     """
-    Compute the new target, apply failsafe, decide whether to write.
+    Compute the PI target, apply failsafe, decide whether to write.
+    The integral is stepped separately by _tick_integral() every CONTROL_DT seconds.
     Returns a status dict.
     """
     global last_write_time, last_target, last_status
 
     now = datetime.now()
 
-    # Formula: mirror around setpoint + signed-square penalty
-    # error > 0 (room cold) → target pushed UP   to heat faster
-    # error < 0 (room warm) → target pushed DOWN  to kill the pump's water-temp integral
-    # penalty = α * error * |error|  (same as α * error², but preserves sign)
-    error = SETPOINT - room_temp
-    penalty = PENALTY_ALPHA * abs(error) * error
-    raw_target = SETPOINT + error + penalty
-    raw_target = round(raw_target, 1)
+    # PI controller output (integral already accumulated by background tick)
+    error     = SETPOINT - room_temp
+    nudge     = (KP * error) + (KI * pi_integral)
+    raw_target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + nudge)), 1)
 
     # Failsafe: clamp to ±FAILSAFE_DELTA of rolling average
     _prune_target_history()
@@ -276,10 +293,11 @@ def _apply_control(room_temp: float) -> dict:
     # Rate limit: once per UPDATE_INTERVAL
     if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
         remaining = UPDATE_INTERVAL - (now - last_write_time).total_seconds()
-        last_status = (f"Room {room_temp}°C → target {clamped}°C "
-                       f"(next write in {int(remaining)}s)")
+        last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
+                       f"→ {clamped}°C  (next write in {int(remaining)}s)")
         return {"target": clamped, "wrote": False,
-                "failsafe": failsafe_active, "avg": avg}
+                "failsafe": failsafe_active, "avg": avg,
+                "integral": pi_integral}
 
     # Write to ebusd
     try:
@@ -288,14 +306,17 @@ def _apply_control(room_temp: float) -> dict:
         last_target = clamped
         target_history.append((now, clamped))
         fs_note = " [failsafe]" if failsafe_active else ""
-        last_status = f"Room {room_temp}°C → wrote target {clamped}°C{fs_note}"
+        last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
+                       f"→ wrote {clamped}°C{fs_note}")
         return {"target": clamped, "wrote": True,
-                "failsafe": failsafe_active, "avg": avg}
+                "failsafe": failsafe_active, "avg": avg,
+                "integral": pi_integral}
     except Exception as e:
         last_status = f"Error writing target: {e}"
-        print(f"[thermostat] write error: {e}")
+        print(f"[therminus] write error: {e}")
         return {"target": clamped, "wrote": False,
-                "failsafe": failsafe_active, "avg": avg, "error": str(e)}
+                "failsafe": failsafe_active, "avg": avg,
+                "integral": pi_integral, "error": str(e)}
 
 
 # ── SSE broadcast ──────────────────────────────────────────────────────────────
@@ -422,10 +443,10 @@ UI_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Thermostat">
+<meta name="apple-mobile-web-app-title" content="Therminus">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0f1117">
-<title>Thermostat</title>
+<title>Therminus</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
@@ -532,6 +553,10 @@ UI_HTML = r"""<!DOCTYPE html>
     border-color: var(--accent);
     color: var(--accent);
     background: rgba(79,195,247,.08);
+  }
+  .is-flipped .flip-btn {
+    visibility: hidden;
+    pointer-events: none;
   }
 
   /* ── Done button on back ── */
