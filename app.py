@@ -12,6 +12,9 @@ import asyncio
 import threading
 import json
 import re
+import time
+import urllib.request
+import urllib.parse
 from datetime import datetime, timedelta
 from collections import deque
 from flask import Flask, Response, render_template_string, jsonify, request
@@ -37,6 +40,12 @@ HISTORY_POINTS   = 1440         # room temp history points to keep
 # Set to 0.0 to disable.
 PENALTY_ALPHA    = 0.10
 
+# ── External API config ────────────────────────────────────────────────────────
+LATITUDE         = "52.3"
+LONGITUDE        = "4.98"
+WEATHER_INTERVAL = 30 * 60      # seconds between Open-Meteo refreshes
+UV_INTERVAL      = 5 * 60 * 60  # seconds between UV index refreshes
+
 # ── Shared state ──────────────────────────────────────────────────────────────
 state_lock       = threading.Lock()
 current_temp     = None          # latest room temp received
@@ -47,8 +56,122 @@ last_target      = None          # last target value written
 last_status      = "Waiting for room temperature…"
 sse_clients      = []
 
+# ── External data cache ────────────────────────────────────────────────────────
+weather_cache    = None   # dict: {icon, desc, fetched_at}
+uv_cache         = None   # dict: {sun_sentence, today_max, tomorrow_max, fetched_at}
+
 # Shared asyncio loop
 _loop            = None
+
+
+# ── External data helpers ──────────────────────────────────────────────────────
+
+WMO_ICONS = {
+    0:'☀️',  1:'🌤️', 2:'⛅',  3:'☁️',
+    45:'🌫️', 48:'🌫️',
+    51:'🌦️', 53:'🌦️', 55:'🌧️',
+    61:'🌧️', 63:'🌧️', 65:'🌧️',
+    71:'🌨️', 73:'🌨️', 75:'❄️',
+    80:'🌦️', 81:'🌧️', 82:'⛈️',
+    95:'⛈️', 96:'⛈️', 99:'⛈️',
+}
+WMO_ICONS_NIGHT = {0:'🌕', 1:'🌔', 2:'🌑', 3:'☁️'}
+WMO_DESC = {
+    0:'Clear',        1:'Mainly clear',   2:'Partly cloudy',  3:'Overcast',
+    45:'Fog',         48:'Icy fog',
+    51:'Light drizzle', 53:'Drizzle',     55:'Heavy drizzle',
+    61:'Light rain',  63:'Rain',          65:'Heavy rain',
+    71:'Light snow',  73:'Snow',          75:'Heavy snow',
+    80:'Showers',     81:'Heavy showers', 82:'Violent showers',
+    95:'Thunderstorm', 96:'Thunderstorm+hail', 99:'Thunderstorm+hail',
+}
+
+def _uv_to_sentence(max_uv, is_tomorrow: bool) -> str:
+    when = 'Tomorrow' if is_tomorrow else 'Today'
+    if max_uv is None:              return ''
+    if max_uv < 1:  return f'{when} will be almost entirely overcast — barely any solar gain.'
+    if max_uv < 2:  return f'{when} is quite grey — very little sun to warm things up.'
+    if max_uv < 3:  return f'{when} has a little sun, but not much solar contribution to expect.'
+    if max_uv < 5:  return f'{when} should see some decent sunshine — a modest boost.'
+    if max_uv < 7:  return f'{when} looks sunny — the sun will do some of the heating work.'
+    if max_uv < 9:  return f'{when} is bright and sunny — good passive solar warmth expected.'
+    return f'{when} will be very sunny — the house should warm up nicely on its own.'
+
+def _fetch_url(url: str, headers: dict | None = None) -> dict | None:
+    try:
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        print(f'[thermostat] fetch error {url}: {e}')
+        return None
+
+def _refresh_weather():
+    global weather_cache
+    params = urllib.parse.urlencode({
+        'latitude': LATITUDE, 'longitude': LONGITUDE,
+        'current': 'weather_code,temperature_2m,is_day',
+        'timezone': 'Europe/Amsterdam',
+    })
+    d = _fetch_url(f'https://api.open-meteo.com/v1/forecast?{params}')
+    if not d:
+        return
+    cur  = d.get('current', {})
+    code = cur.get('weather_code', 0)
+    is_day = cur.get('is_day', 1) == 1
+    if not is_day and code <= 3:
+        icon = WMO_ICONS_NIGHT.get(code, '🌙')
+    else:
+        icon = WMO_ICONS.get(code, '🌡️')
+    desc = WMO_DESC.get(code, 'Unknown')
+    outside_temp = cur.get('temperature_2m')
+    desc_str = f"{desc} · {outside_temp:.1f}°C outside" if outside_temp is not None else desc
+    weather_cache = {'icon': icon, 'desc': desc_str, 'fetched_at': time.time()}
+    _broadcast(json.dumps({'type': 'weather', 'icon': icon, 'desc': desc_str}))
+    print(f'[thermostat] weather refreshed: {icon} {desc_str}')
+
+def _refresh_uv():
+    global uv_cache
+    params = urllib.parse.urlencode({'latitude': LATITUDE, 'longitude': LONGITUDE})
+    d = _fetch_url(
+        f'https://uvindexapi.com/api/v1/forecast?{params}',
+        headers={'Accept': 'application/json'},
+    )
+    if not d or not d.get('ok'):
+        return
+    today_max    = (d.get('today')    or {}).get('max', {}).get('uv_index')
+    tomorrow_max = (d.get('tomorrow') or {}).get('max', {}).get('uv_index')
+    hour         = datetime.now().hour
+    use_tomorrow = hour >= 19
+    max_uv       = tomorrow_max if use_tomorrow else today_max
+    sentence     = _uv_to_sentence(max_uv, use_tomorrow)
+    uv_cache = {
+        'sun_sentence': sentence,
+        'today_max': today_max,
+        'tomorrow_max': tomorrow_max,
+        'fetched_at': time.time(),
+    }
+    _broadcast(json.dumps({'type': 'uv', 'sun_sentence': sentence}))
+    print(f'[thermostat] UV refreshed: {sentence}')
+
+def _background_refresh():
+    """Periodically refresh weather and UV; re-evaluate UV sentence after 19:00."""
+    last_weather = 0.0
+    last_uv      = 0.0
+    last_hour    = -1
+    while True:
+        now  = time.time()
+        hour = datetime.now().hour
+        # Weather: every WEATHER_INTERVAL
+        if now - last_weather >= WEATHER_INTERVAL:
+            _refresh_weather()
+            last_weather = now
+        # UV: every UV_INTERVAL, but also recompute sentence at 19:00 rollover
+        if now - last_uv >= UV_INTERVAL or (hour >= 19 > last_hour):
+            _refresh_uv()
+            last_uv = now
+        last_hour = hour
+        time.sleep(60)
 
 
 # ── pyebus helpers ─────────────────────────────────────────────────────────────
@@ -208,6 +331,16 @@ def post_roomtemp():
     return jsonify({"ok": True, "ts": ts, **result})
 
 
+@app.route("/api/weather")
+def api_weather():
+    return jsonify(weather_cache or {})
+
+
+@app.route("/api/uv")
+def api_uv():
+    return jsonify(uv_cache or {})
+
+
 @app.route("/api/state")
 def api_state():
     with state_lock:
@@ -234,6 +367,8 @@ def api_stream():
                 "target": last_target,
                 "status": last_status,
                 "history": list(room_history),
+                "weather": weather_cache,
+                "uv": uv_cache,
             }
         yield f"data: {json.dumps(snap)}\n\n"
         try:
@@ -655,96 +790,16 @@ function updateClock() {
 updateClock();
 setInterval(updateClock, 10000);
 
-// ── Weather ───────────────────────────────────────────────────────────────────
-const WMO_ICONS = {
-  0:'☀️',1:'🌤️',2:'⛅',3:'☁️',
-  45:'🌫️',48:'🌫️',
-  51:'🌦️',53:'🌦️',55:'🌧️',
-  61:'🌧️',63:'🌧️',65:'🌧️',
-  71:'🌨️',73:'🌨️',75:'❄️',
-  80:'🌦️',81:'🌧️',82:'⛈️',
-  95:'⛈️',96:'⛈️',99:'⛈️',
-};
-const WMO_DESC = {
-  0:'Clear',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',
-  45:'Fog',48:'Icy fog',
-  51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',
-  61:'Light rain',63:'Rain',65:'Heavy rain',
-  71:'Light snow',73:'Snow',75:'Heavy snow',
-  80:'Showers',81:'Heavy showers',82:'Violent showers',
-  95:'Thunderstorm',96:'Thunderstorm+hail',99:'Thunderstorm+hail',
-};
-
-async function fetchWeather() {
-  try {
-    const r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=52.3&longitude=4.98&current=weather_code,temperature_2m,is_day&timezone=Europe%2FAmsterdam');
-    const d = await r.json();
-    const code = d.current.weather_code;
-    const isDay = d.current.is_day === 1;
-
-    // Night overrides: clear/partly-cloudy sky codes get moon treatment
-    const NIGHT_ICONS = { 0:'🌕', 1:'🌔', 2:'🌑', 3:'☁️' };
-    let icon;
-    if (!isDay && code <= 3) {
-      icon = NIGHT_ICONS[code] ?? '🌙';
-    } else {
-      icon = WMO_ICONS[code] ?? '🌡️';
-    }
-
-    document.getElementById('weather-icon').textContent = icon;
-    document.getElementById('weather-desc').textContent =
-      (WMO_DESC[code] ?? 'Unknown') + ' · ' + d.current.temperature_2m.toFixed(1) + '°C outside';
-  } catch {
-    document.getElementById('weather-icon').textContent = '🌡️';
-    document.getElementById('weather-desc').textContent = 'weather unavailable';
-  }
+// ── Weather + UV: applied from SSE, no client-side fetching ──────────────────
+function applyWeather(w) {
+  if (!w) return;
+  document.getElementById('weather-icon').textContent = w.icon ?? '🌡️';
+  document.getElementById('weather-desc').textContent = w.desc ?? '';
 }
-fetchWeather();
-setInterval(fetchWeather, 30 * 60 * 1000);
-
-// ── UV Index ──────────────────────────────────────────────────────────────────
-const UV_CACHE_KEY = 'uv_cache';
-const UV_MAX_INDEX = 11;
-
-async function fetchUV() {
-  const cached = (() => {
-    try { return JSON.parse(sessionStorage.getItem(UV_CACHE_KEY)); } catch { return null; }
-  })();
-  if (cached && (Date.now() - cached.ts) < 5 * 60 * 60 * 1000) { renderUV(cached.data); return; }
-  try {
-    const r = await fetch('https://uvindexapi.com/api/v1/forecast?latitude=52.3&longitude=4.98',
-      { headers: { Accept: 'application/json' } });
-    const d = await r.json();
-    if (d.ok) {
-      sessionStorage.setItem(UV_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: d }));
-      renderUV(d);
-    }
-  } catch { /* silent */ }
+function applyUV(u) {
+  if (!u) return;
+  document.getElementById('sun-sentence').textContent = u.sun_sentence ?? '';
 }
-
-function uvToSentence(maxUV, isForTomorrow) {
-  const when = isForTomorrow ? 'Tomorrow' : 'Today';
-  if (maxUV === null || maxUV === undefined) return '';
-  if (maxUV < 1)  return `${when} will be almost entirely overcast — barely any solar gain.`;
-  if (maxUV < 2)  return `${when} is quite grey — very little sun to warm things up.`;
-  if (maxUV < 3)  return `${when} has a little sun, but not much solar contribution to expect.`;
-  if (maxUV < 5)  return `${when} should see some decent sunshine — a modest boost.`;
-  if (maxUV < 7)  return `${when} looks sunny — the sun will do some of the heating work.`;
-  if (maxUV < 9)  return `${when} is bright and sunny — good passive solar warmth expected.`;
-  return `${when} will be very sunny — the house should warm up nicely on its own.`;
-}
-
-function renderUV(d) {
-  const hour = new Date().getHours();
-  const useTomorrow = hour >= 19;
-  const maxUV = useTomorrow
-    ? (d.tomorrow?.max?.uv_index ?? null)
-    : (d.today?.max?.uv_index ?? null);
-  const sentence = uvToSentence(maxUV, useTomorrow);
-  document.getElementById('sun-sentence').textContent = sentence;
-}
-fetchUV();
-setInterval(fetchUV, 5 * 60 * 60 * 1000);
 
 // ── Chart ─────────────────────────────────────────────────────────────────────
 const dayStart = new Date(); dayStart.setHours(0,0,0,0);
@@ -822,6 +877,8 @@ es.onmessage = (e) => {
     chart.update('none');
     applyState(msg);
     if (msg.last_write) applyState(msg);
+    applyWeather(msg.weather);
+    applyUV(msg.uv);
   }
   if (msg.type === 'update') {
     chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
@@ -829,6 +886,8 @@ es.onmessage = (e) => {
     applyState(msg);
     if (msg.wrote) lastWriteTime = new Date(msg.ts.replace('T',' '));
   }
+  if (msg.type === 'weather') applyWeather(msg);
+  if (msg.type === 'uv')      applyUV(msg);
 };
 </script>
 </body>
@@ -838,4 +897,5 @@ es.onmessage = (e) => {
 # ── Startup ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     threading.Thread(target=_start_async_loop, daemon=True).start()
+    threading.Thread(target=_background_refresh, daemon=True).start()
     app.run(host="0.0.0.0", port=6790, debug=False, threaded=True)
