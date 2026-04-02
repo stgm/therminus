@@ -24,7 +24,7 @@ app = Flask(__name__)
 # ── Configuration ─────────────────────────────────────────────────────────────
 EBUSD_HOST       = "127.0.0.1"
 EBUSD_PORT       = 8888
-SETPOINT         = 20.0          # °C — desired room temperature
+SETPOINT         = 20.5          # °C — desired room temperature
 UPDATE_INTERVAL  = 10 * 60      # seconds between writes to ebusd
 FAILSAFE_WINDOW  = 3 * 60 * 60  # seconds — rolling window for avg (3h)
 FAILSAFE_DELTA   = 2.0          # °C — max deviation from rolling avg
