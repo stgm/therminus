@@ -43,6 +43,12 @@ TARGET_MIN       = 16.0          # °C — never send lower than this
 TARGET_MAX       = 24.0          # °C — never send higher than this
 CONTROL_DT       = 60            # seconds — integral tick rate
 
+# ── Bang-bang config ───────────────────────────────────────────────────────────
+BAND             = 0.3           # °C — deadband around setpoint
+T_MIN_RUN        = 60 * 60       # seconds — minimum run time before stopping
+T_MIN_REST       = 30 * 60       # seconds — minimum rest time before starting
+IDLE_TEMP        = 15.0          # °C — target sent to pump while resting
+
 # ── External API config ────────────────────────────────────────────────────────
 LATITUDE         = "52.3"
 LONGITUDE        = "4.98"
@@ -58,6 +64,10 @@ last_target      = None          # last target value written
 last_status      = "Waiting for room temperature…"
 sse_clients      = []
 pi_integral      = 0.0           # accumulated integral term (°C·s)
+
+# ── Bang-bang state ────────────────────────────────────────────────────────────
+pump_state       = "RESTING"     # "RUNNING" or "RESTING"
+state_since      = datetime.now() # when current state began
 
 # ── External data cache ────────────────────────────────────────────────────────
 weather_cache    = None   # dict: {icon, desc, fetched_at}
@@ -182,36 +192,92 @@ def _refresh_uv():
     _broadcast(json.dumps({'type': 'uv', 'sun_sentence': sentence}))
     print(f'[therminus] UV refreshed: {sentence}')
 
-def _tick_integral():
-    """Accumulate PI integral and write updated target to ebusd. Called every CONTROL_DT seconds."""
-    global pi_integral
-    with state_lock:
-        if current_temp is None:
-            return
-        error = SETPOINT - current_temp
-        new_integral = pi_integral + error * CONTROL_DT
+def _control_tick():
+    """
+    Bang-bang + PI state machine. Called every CONTROL_DT seconds.
+    Must be called with state_lock held.
+    """
+    global pi_integral, pump_state, state_since, last_write_time, last_target, last_status
 
-        # Anti-windup: don't let the integral push in the opposite direction to the error.
-        # If error ≤ 0 (room at/above setpoint), cap integral at 0 so accumulated
-        # heating history can't keep the target elevated.
-        # If error ≥ 0 (room at/below setpoint), cap integral at 0 from below.
+    if current_temp is None:
+        return None
+
+    now       = datetime.now()
+    elapsed   = (now - state_since).total_seconds()
+    error     = SETPOINT - current_temp
+
+    if pump_state == "RESTING":
+        # Transition to RUNNING when room is cool enough AND rested long enough
+        if current_temp < (SETPOINT - BAND) and elapsed >= T_MIN_REST:
+            pump_state  = "RUNNING"
+            state_since = now
+            print(f"[therminus] → RUNNING  room={current_temp:.1f}  rested={elapsed/60:.0f}min")
+            # Fall through to RUNNING block immediately
+        else:
+            # Stay resting: write idle, don't touch integral
+            target = IDLE_TEMP
+            last_status = (f"RESTING  room={current_temp:.1f}°C  "
+                           f"{'cool enough, waiting for rest' if current_temp < SETPOINT - BAND else 'warm enough'}"
+                           f"  rested {elapsed/60:.0f}/{T_MIN_REST/60:.0f}min")
+            _write_now(target, now)
+            return {"target": target, "wrote": True, "state": pump_state}
+
+    if pump_state == "RUNNING":
+        # Transition to RESTING when room is warm enough AND run long enough
+        if current_temp > (SETPOINT + BAND) and elapsed >= T_MIN_RUN:
+            pump_state  = "RESTING"
+            state_since = now
+            print(f"[therminus] → RESTING  room={current_temp:.1f}  ran={elapsed/60:.0f}min")
+            target = IDLE_TEMP
+            last_status = (f"→ RESTING  room={current_temp:.1f}°C  "
+                           f"ran {elapsed/60:.0f}/{T_MIN_RUN/60:.0f}min")
+            _write_now(target, now)
+            return {"target": target, "wrote": True, "state": pump_state}
+
+        # Stay running: update integral and compute PI output
+        new_integral = pi_integral + error * CONTROL_DT
         if error <= 0:
             new_integral = min(new_integral, 0.0)
         else:
             new_integral = max(new_integral, 0.0)
-
         pi_integral = max(-MAX_INTEGRAL, min(MAX_INTEGRAL, new_integral))
-        print(f"[therminus] integral tick: error={error:+.2f}  ∫={pi_integral:.1f}")
-        result = _compute_and_write(current_temp)
 
-    _broadcast(json.dumps({
-        "type": "update",
-        "ts": datetime.now().isoformat(timespec="seconds"),
-        "room_temp": current_temp,
-        "target": result["target"],
-        "wrote": result["wrote"],
-        "status": last_status,
-    }))
+        nudge  = (KP * error) + (KI * pi_integral)
+        target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + nudge)), 1)
+        last_status = (f"RUNNING  room={current_temp:.1f}°C  err={error:+.2f}  "
+                       f"∫={pi_integral:.0f}  → {target}°C  "
+                       f"ran {elapsed/60:.0f}/{T_MIN_RUN/60:.0f}min")
+        _write_now(target, now)
+        return {"target": target, "wrote": True, "state": pump_state}
+
+
+def _write_now(target: float, now: datetime):
+    """Write target to ebusd unconditionally, respecting UPDATE_INTERVAL debounce."""
+    global last_write_time, last_target
+    if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
+        return
+    try:
+        _run_async(_write_target(target))
+        last_write_time = now
+        last_target = target
+    except Exception as e:
+        print(f"[therminus] write error: {e}")
+
+
+def _tick():
+    """Called every CONTROL_DT seconds from the background thread."""
+    with state_lock:
+        result = _control_tick()
+    if result:
+        _broadcast(json.dumps({
+            "type": "update",
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "room_temp": current_temp,
+            "target": result["target"],
+            "wrote": result["wrote"],
+            "state": result["state"],
+            "status": last_status,
+        }))
 
 
 def _background_refresh():
@@ -230,7 +296,7 @@ def _background_refresh():
             _refresh_uv()
             last_uv = now
         if now - last_integral >= CONTROL_DT:
-            _tick_integral()
+            _tick()
             last_integral = now
         last_hour = hour
         time.sleep(10)   # wake every 10s so integral ticks are timely
@@ -268,41 +334,16 @@ def _start_async_loop():
 
 
 # ── Control logic ──────────────────────────────────────────────────────────────
-def _compute_and_write(room_temp: float) -> dict:
-    """
-    Compute PI target from room_temp and write to ebusd if interval elapsed.
-    Called both from sensor POSTs and from the background integral tick.
-    Must be called with state_lock held.
-    """
-    global last_write_time, last_target, last_status
-
-    now    = datetime.now()
-    error  = SETPOINT - room_temp
-    nudge  = (KP * error) + (KI * pi_integral)
-    target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + nudge)), 1)
-
-    if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
-        remaining = UPDATE_INTERVAL - (now - last_write_time).total_seconds()
-        last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
-                       f"→ {target}°C  (next write in {int(remaining)}s)")
-        return {"target": target, "wrote": False}
-
-    try:
-        _run_async(_write_target(target))
-        last_write_time = now
-        last_target = target
-        last_status = (f"Room {room_temp:.1f}°C  err {error:+.2f}  ∫{pi_integral:.0f}  "
-                       f"→ wrote {target}°C")
-        return {"target": target, "wrote": True}
-    except Exception as e:
-        last_status = f"Error writing target: {e}"
-        print(f"[therminus] write error: {e}")
-        return {"target": target, "wrote": False, "error": str(e)}
-
-
 def _apply_control(room_temp: float) -> dict:
-    """Called on sensor POST — delegates to _compute_and_write. Lock must be held by caller."""
-    return _compute_and_write(room_temp)
+    """
+    Called on sensor POST — just updates current_temp in state.
+    The control tick runs independently every CONTROL_DT seconds.
+    Lock must be held by caller.
+    """
+    # Sensor arrival: run a control tick immediately so the pump
+    # gets fresh data without waiting up to 60s.
+    result = _control_tick()
+    return result or {"target": last_target, "wrote": False, "state": pump_state}
 
 
 # ── SSE broadcast ──────────────────────────────────────────────────────────────
@@ -355,6 +396,7 @@ def post_roomtemp():
         "room_temp": value,
         "target": result["target"],
         "wrote": result["wrote"],
+        "state": result.get("state", pump_state),
         "status": last_status,
     }))
 
@@ -396,6 +438,7 @@ def api_stream():
                 "room_temp": current_temp,
                 "target": last_target,
                 "status": last_status,
+                "state": pump_state,
                 "history": list(room_history),
                 "weather": weather_cache,
                 "uv": uv_cache,
@@ -767,6 +810,10 @@ UI_HTML = r"""<!DOCTYPE html>
 
       <div class="chip-grid">
         <div class="chip">
+          <div class="chip-label">State</div>
+          <div class="chip-val" id="info-state">—</div>
+        </div>
+        <div class="chip">
           <div class="chip-label">Last write</div>
           <div class="chip-val" id="info-write">—</div>
         </div>
@@ -870,7 +917,12 @@ function applyState(msg) {
   if (msg.status) {
     document.getElementById('status-text').textContent = msg.status;
     document.getElementById('status-dot').className =
-      'status-dot ' + (msg.wrote ? 'ok' : '');
+      'status-dot ' + (msg.state === 'RUNNING' ? 'ok' : '');
+  }
+  if (msg.state) {
+    const el = document.getElementById('info-state');
+    el.textContent = msg.state;
+    el.className = 'chip-val ' + (msg.state === 'RUNNING' ? 'ok' : 'warn');
   }
   if (msg.last_write) {
     lastWriteTime = new Date(msg.last_write.replace('T',' '));
