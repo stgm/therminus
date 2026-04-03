@@ -363,12 +363,19 @@ async def _read_ebus_values():
     result = {}
     for msgdef in ebus.msgdefs:
         name = msgdef.name.lower()
-        if name == "rundataflowtemp":
-            val = await ebus.async_read(msgdef)
-            result["flow_temp"] = float(val) if val is not None else None
-        elif name == "rundatacompressorspeed":
-            val = await ebus.async_read(msgdef)
-            result["compressor_speed"] = float(val) if val is not None else None
+        if name in ("rundataflowtemp", "rundatacompressorspeed"):
+            msg = await ebus.async_read(msgdef)
+            if msg is not None:
+                # async_read returns a Msg; values are in msg.values (tuple of field values)
+                try:
+                    raw = msg.values[0] if hasattr(msg, 'values') else msg
+                    val = float(raw)
+                    if name == "rundataflowtemp":
+                        result["flow_temp"] = val
+                    else:
+                        result["compressor_speed"] = val
+                except (TypeError, ValueError, IndexError) as e:
+                    print(f"[therminus] ebus parse error for {name}: {e}  raw={msg!r}")
     return result
 
 
