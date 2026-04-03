@@ -302,6 +302,8 @@ def _tick():
                              and (datetime.now() - state_since).total_seconds() >= T_MIN_REST
                              and current_temp <= (SETPOINT + BAND)
                              and current_temp >= (SETPOINT - BAND))
+        _nfc_debug = (pump_state, current_temp, (datetime.now() - state_since).total_seconds() if state_since else None)
+    print(f"[therminus] tick: needs_floor_check={needs_floor_check}  state={_nfc_debug[0]}  room={_nfc_debug[1]}  elapsed={_nfc_debug[2]:.0f}s  band=[{SETPOINT-BAND},{SETPOINT+BAND}]")
     if needs_floor_check:
         _refresh_ebus_reads()
 
