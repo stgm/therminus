@@ -99,46 +99,46 @@ WMO_DESC = {
 
 def _make_status_sentence() -> str:
     """
-    Generate a human-readable sentence explaining the current heating state.
+    Generate a plain-language sentence explaining the current heating state.
     Called with state_lock held.
     """
     if current_temp is None:
-        return "Waiting for room temperature data."
+        return "Waiting for the first temperature reading."
 
     elapsed = (datetime.now() - state_since).total_seconds()
-    diff    = current_temp - SETPOINT
+    diff    = current_temp - SETPOINT  # positive = above setpoint
 
     if pump_state == "RESTING":
         rest_remaining = max(0, T_MIN_REST - elapsed)
-        if current_temp > SETPOINT + BAND:
+        if diff > BAND:
             if rest_remaining > 0:
-                return (f"Resting — room is {diff:+.1f}°C above setpoint. "
-                        f"Minimum rest ends in {rest_remaining/60:.0f} min.")
-            return f"Resting — room is {diff:+.1f}°C above setpoint, no heating needed."
-        elif current_temp < SETPOINT - BAND:
+                return (f"The room is {diff:.1f}° above target — "
+                        f"giving the system a break for {rest_remaining/60:.0f} more min.")
+            return f"The room is comfortably warm, so the heating is off."
+        elif diff < -BAND:
             if rest_remaining > 0:
-                return (f"Room is cooling ({current_temp:.1f}°C), but waiting out minimum rest — "
-                        f"{rest_remaining/60:.0f} min to go.")
-            return f"Room is cool enough to start — will heat on next tick."
+                return (f"It's getting cool in here, but the system is resting — "
+                        f"heating starts in {rest_remaining/60:.0f} min.")
+            return "The room has cooled enough — heating will start shortly."
         else:
             if rest_remaining > 0:
-                return (f"Room is within the deadband ({current_temp:.1f}°C). "
-                        f"Resting {rest_remaining/60:.0f} more min.")
-            return f"Room is within the deadband ({current_temp:.1f}°C), staying rested."
+                return (f"Temperature is right on target. "
+                        f"Staying off for {rest_remaining/60:.0f} more min.")
+            return "Temperature is on target — heating will stay off for now."
 
     else:  # RUNNING
         run_remaining = max(0, T_MIN_RUN - elapsed)
-        if current_temp > SETPOINT + BAND:
+        if diff > BAND:
             if run_remaining > 0:
-                return (f"Heating — room reached {current_temp:.1f}°C but minimum run continues "
-                        f"for {run_remaining/60:.0f} more min.")
-            return f"Room is warm enough — will rest on next tick."
-        elif current_temp < SETPOINT - BAND:
-            return (f"Heating — room is {abs(diff):.1f}°C below setpoint. "
-                    f"Running for {elapsed/60:.0f} min.")
+                return (f"Target reached, but keeping the heating on "
+                        f"for {run_remaining/60:.0f} more min to build up warmth.")
+            return "The room is warm enough — heating will stop shortly."
+        elif diff < -BAND:
+            return (f"Heating — the room is {abs(diff):.1f}° below target. "
+                    f"Running for {elapsed/60:.0f} min so far.")
         else:
-            return (f"Heating — room is at {current_temp:.1f}°C, within deadband. "
-                    f"Running for {elapsed/60:.0f} min.")
+            return (f"Almost there — the room is right at target. "
+                    f"Finishing the current heating run ({elapsed/60:.0f} min in).")
 
 import ssl
 _ssl_ctx = ssl.create_default_context()
@@ -466,17 +466,19 @@ UI_HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg:         #0f1117;
-    --surface:    #181c27;
-    --card:       #1e2333;
-    --border:     #2a3045;
-    --accent:     #4fc3f7;
-    --accent2:    #81c995;
-    --warn:       #ffb74d;
-    --red:        #ef5350;
-    --text:       #e8eaf0;
-    --text-dim:   #7a8099;
-    --back-bg:    #141824;
+    --bg:         #0c0e14;
+    --surface:    #13161f;
+    --card:       #191d2a;
+    --border:     #252b3d;
+    --accent:     #60cdff;
+    --accent2:    #6ee7a0;
+    --warn:       #ffc14d;
+    --red:        #ff6b6b;
+    --text:       #f0f2f8;
+    --text-dim:   #6b7590;
+    --back-bg:    #10121a;
+    --heating:    #ff8c42;
+    --resting:    #6ee7a0;
     --mono:       'DM Mono', monospace;
     --sans:       'DM Sans', sans-serif;
   }
@@ -645,17 +647,49 @@ UI_HTML = r"""<!DOCTYPE html>
   }
 
   /* Row 2: big temperature */
-  .temp-row { margin-bottom: 16px; }
-  .temp-sublabel {
-    font-size: 11px; font-weight: 500;
-    letter-spacing: .12em; text-transform: uppercase;
-    color: var(--text-dim); margin-bottom: 2px;
-  }
+  .temp-row { margin-bottom: 14px; }
   .temp-big {
     font-family: var(--mono); font-size: 86px; font-weight: 300;
     line-height: 1; color: var(--accent); letter-spacing: -3px;
   }
   .temp-unit { font-size: 26px; font-weight: 300; color: var(--text-dim); }
+
+  /* Action badge */
+  .action-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 10px;
+    margin-bottom: 16px;
+    padding: 5px 13px 5px 9px;
+    border-radius: 99px;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: .04em;
+    border: 1.5px solid transparent;
+    transition: background .4s, color .4s, border-color .4s;
+  }
+  .action-badge .badge-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .action-badge.heating {
+    color: var(--heating);
+    border-color: rgba(255,140,66,.3);
+    background: rgba(255,140,66,.08);
+  }
+  .action-badge.heating .badge-dot {
+    background: var(--heating);
+    box-shadow: 0 0 5px var(--heating);
+  }
+  .action-badge.resting {
+    color: var(--resting);
+    border-color: rgba(110,231,160,.25);
+    background: rgba(110,231,160,.06);
+  }
+  .action-badge.resting .badge-dot {
+    background: var(--resting);
+    box-shadow: 0 0 5px var(--resting);
+  }
 
   /* Row 3: status sentence */
   .status-sentence {
@@ -759,11 +793,14 @@ UI_HTML = r"""<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Row 2: big temperature -->
+        <!-- Row 2: big temperature + action badge -->
         <div class="temp-row">
-          <div class="temp-sublabel">Room Temperature</div>
           <span class="temp-big" id="lcd-temp">--.-</span>
           <span class="temp-unit">°C</span>
+        </div>
+        <div class="action-badge" id="action-badge">
+          <span class="badge-dot"></span>
+          <span id="action-label">—</span>
         </div>
 
         <!-- Row 3: status sentence -->
@@ -900,16 +937,26 @@ function applyState(msg) {
   if (msg.room_temp != null)
     document.getElementById('lcd-temp').textContent = msg.room_temp.toFixed(1);
 
-  if (msg.status) {
-    document.getElementById('status-text').textContent = msg.status;
-    document.getElementById('status-dot').className =
-      'status-dot ' + (msg.state === 'RUNNING' ? 'ok' : '');
-  }
   if (msg.state) {
+    const badge = document.getElementById('action-badge');
+    const label = document.getElementById('action-label');
+    const isHeating = msg.state === 'RUNNING';
+    badge.className = 'action-badge ' + (isHeating ? 'heating' : 'resting');
+    label.textContent = isHeating ? 'Heating' : 'Resting';
+    // back panel state chip
     const el = document.getElementById('info-state');
-    el.textContent = msg.state;
-    el.className = 'chip-val ' + (msg.state === 'RUNNING' ? 'ok' : 'warn');
+    if (el) {
+      el.textContent = msg.state;
+      el.className = 'chip-val ' + (isHeating ? 'ok' : 'warn');
+    }
+    // status dot
+    document.getElementById('status-dot').className =
+      'status-dot ' + (isHeating ? 'ok' : '');
   }
+
+  if (msg.status)
+    document.getElementById('status-text').textContent = msg.status;
+
   if (msg.last_write) {
     lastWriteTime = new Date(msg.last_write.replace('T',' '));
     document.getElementById('info-write').textContent =
