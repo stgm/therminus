@@ -53,7 +53,6 @@ IDLE_TEMP        = 15.0          # °C — target sent to pump while resting
 LATITUDE         = "52.3"
 LONGITUDE        = "4.98"
 WEATHER_INTERVAL = 30 * 60      # seconds between Open-Meteo refreshes
-UV_INTERVAL      = 5 * 60 * 60  # seconds between UV index refreshes
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 state_lock       = threading.Lock()
@@ -71,7 +70,6 @@ state_since      = datetime.now() # when current state began
 
 # ── External data cache ────────────────────────────────────────────────────────
 weather_cache    = None   # dict: {icon, desc, fetched_at}
-uv_cache         = None   # dict: {sun_sentence, today_max, tomorrow_max, fetched_at}
 
 # Shared asyncio loop
 _loop            = None
@@ -99,16 +97,48 @@ WMO_DESC = {
     95:'Thunderstorm', 96:'Thunderstorm+hail', 99:'Thunderstorm+hail',
 }
 
-def _uv_to_sentence(max_uv, is_tomorrow: bool) -> str:
-    when = 'Tomorrow' if is_tomorrow else 'Today'
-    if max_uv is None:              return ''
-    if max_uv < 1:  return f'{when} will be almost entirely overcast — barely any solar gain.'
-    if max_uv < 2:  return f'{when} is quite grey — very little sun to warm things up.'
-    if max_uv < 3:  return f'{when} has a little sun, but not much solar contribution to expect.'
-    if max_uv < 5:  return f'{when} should see some decent sunshine — a modest boost.'
-    if max_uv < 7:  return f'{when} looks sunny — the sun will do some of the heating work.'
-    if max_uv < 9:  return f'{when} is bright and sunny — good passive solar warmth expected.'
-    return f'{when} will be very sunny — the house should warm up nicely on its own.'
+def _make_status_sentence() -> str:
+    """
+    Generate a human-readable sentence explaining the current heating state.
+    Called with state_lock held.
+    """
+    if current_temp is None:
+        return "Waiting for room temperature data."
+
+    elapsed = (datetime.now() - state_since).total_seconds()
+    diff    = current_temp - SETPOINT
+
+    if pump_state == "RESTING":
+        rest_remaining = max(0, T_MIN_REST - elapsed)
+        if current_temp > SETPOINT + BAND:
+            if rest_remaining > 0:
+                return (f"Resting — room is {diff:+.1f}°C above setpoint. "
+                        f"Minimum rest ends in {rest_remaining/60:.0f} min.")
+            return f"Resting — room is {diff:+.1f}°C above setpoint, no heating needed."
+        elif current_temp < SETPOINT - BAND:
+            if rest_remaining > 0:
+                return (f"Room is cooling ({current_temp:.1f}°C), but waiting out minimum rest — "
+                        f"{rest_remaining/60:.0f} min to go.")
+            return f"Room is cool enough to start — will heat on next tick."
+        else:
+            if rest_remaining > 0:
+                return (f"Room is within the deadband ({current_temp:.1f}°C). "
+                        f"Resting {rest_remaining/60:.0f} more min.")
+            return f"Room is within the deadband ({current_temp:.1f}°C), staying rested."
+
+    else:  # RUNNING
+        run_remaining = max(0, T_MIN_RUN - elapsed)
+        if current_temp > SETPOINT + BAND:
+            if run_remaining > 0:
+                return (f"Heating — room reached {current_temp:.1f}°C but minimum run continues "
+                        f"for {run_remaining/60:.0f} more min.")
+            return f"Room is warm enough — will rest on next tick."
+        elif current_temp < SETPOINT - BAND:
+            return (f"Heating — room is {abs(diff):.1f}°C below setpoint. "
+                    f"Running for {elapsed/60:.0f} min.")
+        else:
+            return (f"Heating — room is at {current_temp:.1f}°C, within deadband. "
+                    f"Running for {elapsed/60:.0f} min.")
 
 import ssl
 _ssl_ctx = ssl.create_default_context()
@@ -156,41 +186,6 @@ def _refresh_weather():
     weather_cache = {'icon': icon, 'desc': desc_str, 'fetched_at': time.time()}
     _broadcast(json.dumps({'type': 'weather', 'icon': icon, 'desc': desc_str}))
     print(f'[therminus] weather refreshed: {icon} {desc_str}')
-
-def _refresh_uv():
-    global uv_cache
-    params = urllib.parse.urlencode({'latitude': LATITUDE, 'longitude': LONGITUDE})
-    d = _fetch_url(
-        f'https://uvindexapi.com/api/v1/forecast?{params}',
-        headers={
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-            'Referer': 'https://uvindexapi.com/',
-            'Origin': 'https://uvindexapi.com',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-            'Connection': 'keep-alive',
-        },
-    )
-    if not d or not d.get('ok'):
-        return
-    today_max    = (d.get('today')    or {}).get('max', {}).get('uv_index')
-    tomorrow_max = (d.get('tomorrow') or {}).get('max', {}).get('uv_index')
-    hour         = datetime.now().hour
-    use_tomorrow = hour >= 19
-    max_uv       = tomorrow_max if use_tomorrow else today_max
-    sentence     = _uv_to_sentence(max_uv, use_tomorrow)
-    uv_cache = {
-        'sun_sentence': sentence,
-        'today_max': today_max,
-        'tomorrow_max': tomorrow_max,
-        'fetched_at': time.time(),
-    }
-    _broadcast(json.dumps({'type': 'uv', 'sun_sentence': sentence}))
-    print(f'[therminus] UV refreshed: {sentence}')
 
 def _control_tick():
     """
@@ -268,6 +263,7 @@ def _tick():
     """Called every CONTROL_DT seconds from the background thread."""
     with state_lock:
         result = _control_tick()
+        sentence = _make_status_sentence()
     if result:
         _broadcast(json.dumps({
             "type": "update",
@@ -277,29 +273,23 @@ def _tick():
             "wrote": result["wrote"],
             "state": result["state"],
             "status": last_status,
+            "status_sentence": sentence,
         }))
 
 
 def _background_refresh():
-    """Periodically refresh weather, UV, and step the PI integral."""
+    """Periodically refresh weather and step the PI integral."""
     last_weather  = 0.0
-    last_uv       = 0.0
     last_integral = 0.0
-    last_hour     = -1
     while True:
-        now  = time.time()
-        hour = datetime.now().hour
+        now = time.time()
         if now - last_weather >= WEATHER_INTERVAL:
             _refresh_weather()
             last_weather = now
-        if now - last_uv >= UV_INTERVAL or (hour >= 19 > last_hour):
-            _refresh_uv()
-            last_uv = now
         if now - last_integral >= CONTROL_DT:
             _tick()
             last_integral = now
-        last_hour = hour
-        time.sleep(10)   # wake every 10s so integral ticks are timely
+        time.sleep(10)
 
 
 # ── pyebus helpers ─────────────────────────────────────────────────────────────
@@ -389,6 +379,7 @@ def post_roomtemp():
         current_temp = value
         room_history.append({"ts": ts, "value": value})
         result = _apply_control(value)
+        sentence = _make_status_sentence()
 
     _broadcast(json.dumps({
         "type": "update",
@@ -398,6 +389,7 @@ def post_roomtemp():
         "wrote": result["wrote"],
         "state": result.get("state", pump_state),
         "status": last_status,
+        "status_sentence": sentence,
     }))
 
     return jsonify({"ok": True, "ts": ts, **result})
@@ -406,11 +398,6 @@ def post_roomtemp():
 @app.route("/api/weather")
 def api_weather():
     return jsonify(weather_cache or {})
-
-
-@app.route("/api/uv")
-def api_uv():
-    return jsonify(uv_cache or {})
 
 
 @app.route("/api/state")
@@ -439,9 +426,9 @@ def api_stream():
                 "target": last_target,
                 "status": last_status,
                 "state": pump_state,
+                "status_sentence": _make_status_sentence(),
                 "history": list(room_history),
                 "weather": weather_cache,
-                "uv": uv_cache,
             }
         yield f"data: {json.dumps(snap)}\n\n"
         try:
@@ -670,8 +657,8 @@ UI_HTML = r"""<!DOCTYPE html>
   }
   .temp-unit { font-size: 26px; font-weight: 300; color: var(--text-dim); }
 
-  /* Row 3: sun sentence */
-  .sun-sentence {
+  /* Row 3: status sentence */
+  .status-sentence {
     font-size: 14px;
     font-weight: 300;
     color: var(--text-dim);
@@ -779,8 +766,8 @@ UI_HTML = r"""<!DOCTYPE html>
           <span class="temp-unit">°C</span>
         </div>
 
-        <!-- Row 3: sun sentence -->
-        <div class="sun-sentence" id="sun-sentence">—</div>
+        <!-- Row 3: status sentence -->
+        <div class="status-sentence" id="status-sentence">—</div>
 
         <!-- ⓘ flip button -->
         <button class="flip-btn" id="btn-flip-to-back" title="System info">ⓘ</button>
@@ -862,15 +849,15 @@ function updateClock() {
 updateClock();
 setInterval(updateClock, 10000);
 
-// ── Weather + UV: applied from SSE, no client-side fetching ──────────────────
+// ── Weather + status sentence: applied from SSE ───────────────────────────────
 function applyWeather(w) {
   if (!w) return;
   document.getElementById('weather-icon').textContent = w.icon ?? '🌡️';
   document.getElementById('weather-desc').textContent = w.desc ?? '';
 }
-function applyUV(u) {
-  if (!u) return;
-  document.getElementById('sun-sentence').textContent = u.sun_sentence ?? '';
+function applyStatusSentence(msg) {
+  if (msg.status_sentence != null)
+    document.getElementById('status-sentence').textContent = msg.status_sentence;
 }
 
 // ── Chart ─────────────────────────────────────────────────────────────────────
@@ -948,16 +935,16 @@ es.onmessage = (e) => {
     applyState(msg);
     if (msg.last_write) applyState(msg);
     applyWeather(msg.weather);
-    applyUV(msg.uv);
+    applyStatusSentence(msg);
   }
   if (msg.type === 'update') {
     chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
     chart.update('none');
     applyState(msg);
+    applyStatusSentence(msg);
     if (msg.wrote) lastWriteTime = new Date(msg.ts.replace('T',' '));
   }
   if (msg.type === 'weather') applyWeather(msg);
-  if (msg.type === 'uv')      applyUV(msg);
 };
 </script>
 </body>
