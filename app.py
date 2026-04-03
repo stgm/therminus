@@ -74,6 +74,7 @@ pi_integral      = 0.0           # accumulated integral term (°C·s)
 # ── Bang-bang state ────────────────────────────────────────────────────────────
 pump_state       = "RESTING"     # "RUNNING" or "RESTING"
 state_since      = datetime.now() # when current state began
+run_reason       = "normal"       # "normal" or "floor"
 
 # ── Ebus read cache ────────────────────────────────────────────────────────────
 ebus_flow_temp        = None     # last read hmu/RunDataFlowTemp
@@ -146,6 +147,9 @@ def _make_status_sentence() -> str:
 
     else:  # RUNNING
         run_remaining = max(0, T_MIN_RUN - elapsed)
+        if run_reason == "floor":
+            return ("The floor was getting cold, so it's being warmed up. "
+                    f"Running for {elapsed/60:.0f} min so far.")
         if diff > BAND:
             if run_remaining > 0:
                 return (f"The room is warm enough, but finishing the minimum run — "
@@ -210,7 +214,7 @@ def _control_tick():
     Bang-bang + PI state machine. Called every CONTROL_DT seconds.
     Must be called with state_lock held.
     """
-    global pi_integral, pump_state, state_since, last_write_time, last_target, last_status
+    global pi_integral, pump_state, state_since, run_reason, last_write_time, last_target, last_status
 
     if current_temp is None:
         return None
@@ -226,6 +230,7 @@ def _control_tick():
             if current_temp < (SETPOINT - BAND):
                 pump_state  = "RUNNING"
                 state_since = now
+                run_reason  = "normal"
                 print(f"[therminus] → RUNNING  room={current_temp:.1f}  rested={elapsed/60:.0f}min")
                 # Fall through to RUNNING block immediately
 
@@ -237,6 +242,7 @@ def _control_tick():
                              or ebus_compressor_speed <= FLOOR_MAX_COMPRESSOR)):
                     pump_state  = "RUNNING"
                     state_since = now
+                    run_reason  = "floor"
                     print(f"[therminus] → RUNNING (floor comfort)  "
                           f"flow={ebus_flow_temp}°C  compressor={ebus_compressor_speed}%")
                     # Fall through to RUNNING block immediately
@@ -255,6 +261,7 @@ def _control_tick():
         if current_temp > (SETPOINT + BAND) and elapsed >= T_MIN_RUN:
             pump_state  = "RESTING"
             state_since = now
+            run_reason  = "normal"
             print(f"[therminus] → RESTING  room={current_temp:.1f}  ran={elapsed/60:.0f}min")
             target = IDLE_TEMP
             last_status = (f"→ RESTING  room={current_temp:.1f}°C  "
@@ -310,6 +317,7 @@ def _tick():
     with state_lock:
         result = _control_tick()
         sentence = _make_status_sentence()
+        _run_reason = run_reason
     if result:
         _broadcast(json.dumps({
             "type": "update",
@@ -318,6 +326,7 @@ def _tick():
             "target": result["target"],
             "wrote": result["wrote"],
             "state": result["state"],
+            "run_reason": _run_reason,
             "status": last_status,
             "status_sentence": sentence,
         }))
@@ -460,6 +469,7 @@ def post_roomtemp():
         room_history.append({"ts": ts, "value": value})
         result = _apply_control(value)
         sentence = _make_status_sentence()
+        _run_reason = run_reason
 
     _broadcast(json.dumps({
         "type": "update",
@@ -468,6 +478,7 @@ def post_roomtemp():
         "target": result["target"],
         "wrote": result["wrote"],
         "state": result.get("state", pump_state),
+        "run_reason": _run_reason,
         "status": last_status,
         "status_sentence": sentence,
     }))
@@ -506,6 +517,7 @@ def api_stream():
                 "target": last_target,
                 "status": last_status,
                 "state": pump_state,
+                "run_reason": run_reason,
                 "status_sentence": _make_status_sentence(),
                 "history": list(room_history),
                 "weather": weather_cache,
@@ -991,10 +1003,12 @@ function applyState(msg) {
     document.getElementById('lcd-temp').textContent = msg.room_temp.toFixed(1);
 
   if (msg.state) {
-    const badge = document.getElementById('action-badge');
+    const badge   = document.getElementById('action-badge');
+    const label   = document.getElementById('action-label');
     const isHeating = msg.state === 'RUNNING';
-    badge.className = 'action-label ' + (isHeating ? 'heating' : 'resting');
-    badge.textContent = isHeating ? 'Heating' : 'Resting';
+    const isFloor   = isHeating && msg.run_reason === 'floor';
+    badge.className = 'action-badge ' + (isHeating ? 'heating' : 'resting');
+    label.textContent = isFloor ? 'Warming the floor' : (isHeating ? 'Heating' : 'Resting');
     // back panel state chip
     const el = document.getElementById('info-state');
     if (el) {
