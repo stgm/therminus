@@ -202,6 +202,19 @@ def _control_tick():
     elapsed = (now - state_since).total_seconds()
     error   = SETPOINT - current_temp
 
+    # ── Startup detection ─────────────────────────────────────────────────────
+    # If we just started and the compressor is already running for heating,
+    # jump straight to RUNNING so we can detect when it stops.
+    if (pump_state == "RESTING"
+            and last_write_time is None       # haven't written anything yet
+            and ebus_compressor_speed is not None
+            and ebus_compressor_speed > 0
+            and ebus_valve == VALVE_HEATING.lower()):
+        pump_state             = "RUNNING"
+        state_since            = now
+        ebus_valve_was_heating = True
+        print(f"[therminus] startup: compressor already running, → RUNNING")
+
     # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
         if elapsed >= t_min_rest:
