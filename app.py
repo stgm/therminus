@@ -746,19 +746,6 @@ UI_HTML = r"""<!DOCTYPE html>
   }
   .temp-unit { font-size: 26px; font-weight: 300; color: var(--text-dim); }
 
-  /* Action label */
-  .action-label {
-    font-family: var(--mono);
-    font-size: 15px;
-    font-weight: 400;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    margin-bottom: 18px;
-    transition: color .4s;
-  }
-  .action-label.heating { color: var(--heating); }
-  .action-label.resting { color: var(--resting); }
-
   /* Row 3: status sentence */
   .status-sentence {
     font-size: 14px;
@@ -866,7 +853,10 @@ UI_HTML = r"""<!DOCTYPE html>
           <span class="temp-big" id="lcd-temp">--.-</span>
           <span class="temp-unit">°C</span>
         </div>
-        <div class="action-label" id="action-badge">—</div>
+        <div class="action-badge" id="action-badge">
+          <span class="badge-dot"></span>
+          <span id="action-label">—</span>
+        </div>
 
         <!-- Row 3: status sentence -->
         <div class="status-sentence" id="status-sentence">—</div>
