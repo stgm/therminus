@@ -113,26 +113,26 @@ def _make_status_sentence() -> str:
         if diff > BAND:
             if rest_remaining > 0:
                 return (f"The room is {diff:.1f}° above target — "
-                        f"giving the system a break for {rest_remaining/60:.0f} more min.")
-            return f"The room is comfortably warm, so the heating is off."
+                        f"resting for at least {rest_remaining/60:.0f} more min.")
+            return "The room is comfortably warm, so the heating is off."
         elif diff < -BAND:
             if rest_remaining > 0:
                 return (f"It's getting cool in here, but the system is resting — "
-                        f"heating starts in {rest_remaining/60:.0f} min.")
-            return "The room has cooled enough — heating will start shortly."
+                        f"heating can start in {rest_remaining/60:.0f} min.")
+            return "The room has cooled enough — heating will start on the next cycle."
         else:
             if rest_remaining > 0:
-                return (f"Temperature is right on target. "
-                        f"Staying off for {rest_remaining/60:.0f} more min.")
-            return "Temperature is on target — heating will stay off for now."
+                return (f"Temperature is on target. "
+                        f"Resting for at least {rest_remaining/60:.0f} more min.")
+            return "Temperature is on target — no reason to heat right now."
 
     else:  # RUNNING
         run_remaining = max(0, T_MIN_RUN - elapsed)
         if diff > BAND:
             if run_remaining > 0:
-                return (f"Target reached, but keeping the heating on "
-                        f"for {run_remaining/60:.0f} more min to build up warmth.")
-            return "The room is warm enough — heating will stop shortly."
+                return (f"The room is warm enough, but finishing the minimum run — "
+                        f"{run_remaining/60:.0f} min left.")
+            return "The room is warm enough — heating will stop on the next cycle."
         elif diff < -BAND:
             return (f"Heating — the room is {abs(diff):.1f}° below target. "
                     f"Running for {elapsed/60:.0f} min so far.")
@@ -654,42 +654,18 @@ UI_HTML = r"""<!DOCTYPE html>
   }
   .temp-unit { font-size: 26px; font-weight: 300; color: var(--text-dim); }
 
-  /* Action badge */
-  .action-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    margin-top: 10px;
-    margin-bottom: 16px;
-    padding: 5px 13px 5px 9px;
-    border-radius: 99px;
-    font-size: 13px;
-    font-weight: 500;
-    letter-spacing: .04em;
-    border: 1.5px solid transparent;
-    transition: background .4s, color .4s, border-color .4s;
+  /* Action label */
+  .action-label {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 400;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+    transition: color .4s;
   }
-  .action-badge .badge-dot {
-    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-  }
-  .action-badge.heating {
-    color: var(--heating);
-    border-color: rgba(255,140,66,.3);
-    background: rgba(255,140,66,.08);
-  }
-  .action-badge.heating .badge-dot {
-    background: var(--heating);
-    box-shadow: 0 0 5px var(--heating);
-  }
-  .action-badge.resting {
-    color: var(--resting);
-    border-color: rgba(110,231,160,.25);
-    background: rgba(110,231,160,.06);
-  }
-  .action-badge.resting .badge-dot {
-    background: var(--resting);
-    box-shadow: 0 0 5px var(--resting);
-  }
+  .action-label.heating { color: var(--heating); }
+  .action-label.resting { color: var(--resting); }
 
   /* Row 3: status sentence */
   .status-sentence {
@@ -798,10 +774,7 @@ UI_HTML = r"""<!DOCTYPE html>
           <span class="temp-big" id="lcd-temp">--.-</span>
           <span class="temp-unit">°C</span>
         </div>
-        <div class="action-badge" id="action-badge">
-          <span class="badge-dot"></span>
-          <span id="action-label">—</span>
-        </div>
+        <div class="action-label" id="action-badge">—</div>
 
         <!-- Row 3: status sentence -->
         <div class="status-sentence" id="status-sentence">—</div>
@@ -939,10 +912,9 @@ function applyState(msg) {
 
   if (msg.state) {
     const badge = document.getElementById('action-badge');
-    const label = document.getElementById('action-label');
     const isHeating = msg.state === 'RUNNING';
-    badge.className = 'action-badge ' + (isHeating ? 'heating' : 'resting');
-    label.textContent = isHeating ? 'Heating' : 'Resting';
+    badge.className = 'action-label ' + (isHeating ? 'heating' : 'resting');
+    badge.textContent = isHeating ? 'Heating' : 'Resting';
     // back panel state chip
     const el = document.getElementById('info-state');
     if (el) {
