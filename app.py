@@ -193,7 +193,7 @@ def _control_tick():
     Must be called with state_lock held.
     Ebus reads happen outside the lock in _tick before this is called.
     """
-    global pump_state, state_since, t_min_rest, last_write_time, last_target, last_status
+    global pump_state, state_since, t_min_rest, ebus_valve_was_heating, last_write_time, last_target, last_status
 
     if current_temp is None:
         return None
@@ -1058,7 +1058,8 @@ es.onmessage = (e) => {
     applyStatusSentence(msg);
   }
   if (msg.type === 'update') {
-    chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
+    if (msg.room_temp != null)
+      chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
     chart.update('none');
     applyState(msg);
     applyStatusSentence(msg);
@@ -1073,6 +1074,21 @@ es.onmessage = (e) => {
 
 # ── Startup ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Therminus heat pump controller")
+    parser.add_argument(
+        "--initial-rest", type=int, default=None, metavar="MINUTES",
+        help="Override the initial resting period in minutes (default: 60). "
+             "Use 0 to start immediately."
+    )
+    args = parser.parse_args()
+
+    if args.initial_rest is not None:
+        t_min_rest  = args.initial_rest * 60
+        state_since = datetime.now() - timedelta(seconds=t_min_rest)
+        print(f"[therminus] initial rest overridden: {args.initial_rest} min "
+              f"({'immediate start eligible' if args.initial_rest == 0 else 'timer already elapsed'})")
+
     threading.Thread(target=_start_async_loop, daemon=True).start()
     threading.Thread(target=_background_refresh, daemon=True).start()
     app.run(host="0.0.0.0", port=6790, debug=False, threaded=True)
