@@ -49,6 +49,13 @@ T_MIN_RUN        = 60 * 60       # seconds — minimum run time before stopping
 T_MIN_REST       = 30 * 60       # seconds — minimum rest time before starting
 IDLE_TEMP        = 15.0          # °C — target sent to pump while resting
 
+# ── Floor comfort override ─────────────────────────────────────────────────────
+# While resting and room temp is at/below setpoint, if the floor flow temp drops
+# below FLOOR_COMFORT_TEMP AND the compressor is not running for hot water,
+# start heating regardless of T_MIN_REST.
+FLOOR_COMFORT_TEMP      = 25.0   # °C — minimum acceptable flow temp for floor comfort
+FLOOR_MAX_COMPRESSOR    = 0.0    # % — compressor must be fully idle (not doing DHW)
+
 # ── External API config ────────────────────────────────────────────────────────
 LATITUDE         = "52.3"
 LONGITUDE        = "4.98"
@@ -67,6 +74,10 @@ pi_integral      = 0.0           # accumulated integral term (°C·s)
 # ── Bang-bang state ────────────────────────────────────────────────────────────
 pump_state       = "RESTING"     # "RUNNING" or "RESTING"
 state_since      = datetime.now() # when current state began
+
+# ── Ebus read cache ────────────────────────────────────────────────────────────
+ebus_flow_temp        = None     # last read hmu/RunDataFlowTemp
+ebus_compressor_speed = None     # last read hmu/RunDataCompressorSpeed
 
 # ── External data cache ────────────────────────────────────────────────────────
 weather_cache    = None   # dict: {icon, desc, fetched_at}
@@ -110,6 +121,10 @@ def _make_status_sentence() -> str:
 
     if pump_state == "RESTING":
         rest_remaining = max(0, T_MIN_REST - elapsed)
+        # Floor comfort override active?
+        floor_cold = (ebus_flow_temp is not None and ebus_flow_temp < FLOOR_COMFORT_TEMP
+                      and (ebus_compressor_speed is None
+                           or ebus_compressor_speed <= FLOOR_MAX_COMPRESSOR))
         if diff > BAND:
             if rest_remaining > 0:
                 return (f"The room is {diff:.1f}° above target — "
@@ -121,6 +136,9 @@ def _make_status_sentence() -> str:
                         f"heating can start in {rest_remaining/60:.0f} min.")
             return "The room has cooled enough — heating will start on the next cycle."
         else:
+            if floor_cold:
+                return (f"Temperature is on target, but the floor is cooling down "
+                        f"({ebus_flow_temp:.0f}°C flow) — starting a short heating run.")
             if rest_remaining > 0:
                 return (f"Temperature is on target. "
                         f"Resting for at least {rest_remaining/60:.0f} more min.")
@@ -202,14 +220,29 @@ def _control_tick():
     error     = SETPOINT - current_temp
 
     if pump_state == "RESTING":
-        # Transition to RUNNING when room is cool enough AND rested long enough
-        if current_temp < (SETPOINT - BAND) and elapsed >= T_MIN_REST:
-            pump_state  = "RUNNING"
-            state_since = now
-            print(f"[therminus] → RUNNING  room={current_temp:.1f}  rested={elapsed/60:.0f}min")
-            # Fall through to RUNNING block immediately
-        else:
-            # Stay resting: write idle, don't touch integral
+        # Transition to RUNNING requires minimum rest time in all cases
+        if elapsed >= T_MIN_REST:
+            # Normal trigger: room has cooled below band
+            if current_temp < (SETPOINT - BAND):
+                pump_state  = "RUNNING"
+                state_since = now
+                print(f"[therminus] → RUNNING  room={current_temp:.1f}  rested={elapsed/60:.0f}min")
+                # Fall through to RUNNING block immediately
+
+            # Floor comfort trigger: room is in or below band, but floor is getting cold
+            elif current_temp <= (SETPOINT + BAND):
+                if (ebus_flow_temp is not None
+                        and ebus_flow_temp < FLOOR_COMFORT_TEMP
+                        and (ebus_compressor_speed is None
+                             or ebus_compressor_speed <= FLOOR_MAX_COMPRESSOR)):
+                    pump_state  = "RUNNING"
+                    state_since = now
+                    print(f"[therminus] → RUNNING (floor comfort)  "
+                          f"flow={ebus_flow_temp}°C  compressor={ebus_compressor_speed}%")
+                    # Fall through to RUNNING block immediately
+
+        if pump_state == "RESTING":
+            # Still resting — write idle, don't touch integral
             target = IDLE_TEMP
             last_status = (f"RESTING  room={current_temp:.1f}°C  "
                            f"{'cool enough, waiting for rest' if current_temp < SETPOINT - BAND else 'warm enough'}"
@@ -261,6 +294,17 @@ def _write_now(target: float, now: datetime):
 
 def _tick():
     """Called every CONTROL_DT seconds from the background thread."""
+    # Read ebus values outside the lock (blocking I/O) so they're available
+    # inside _control_tick when evaluating the floor comfort condition.
+    with state_lock:
+        needs_floor_check = (pump_state == "RESTING"
+                             and current_temp is not None
+                             and (datetime.now() - state_since).total_seconds() >= T_MIN_REST
+                             and current_temp <= (SETPOINT + BAND)
+                             and current_temp >= (SETPOINT - BAND))
+    if needs_floor_check:
+        _refresh_ebus_reads()
+
     with state_lock:
         result = _control_tick()
         sentence = _make_status_sentence()
@@ -309,6 +353,33 @@ async def _write_target(target: float):
             print(f"[therminus] wrote TargetTempHc = {target}")
             return
     print("[therminus] WARNING: TargetTempHc msgdef not found")
+
+
+async def _read_ebus_values():
+    """Read flow temp and compressor speed from ebusd."""
+    ebus = await _make_ebus()
+    result = {}
+    for msgdef in ebus.msgdefs:
+        name = msgdef.name.lower()
+        if name == "rundataflowtemp":
+            val = await ebus.async_read(msgdef)
+            result["flow_temp"] = float(val) if val is not None else None
+        elif name == "rundatacompressorspeed":
+            val = await ebus.async_read(msgdef)
+            result["compressor_speed"] = float(val) if val is not None else None
+    return result
+
+
+def _refresh_ebus_reads():
+    """Sync wrapper — update global ebus read cache. Called each control tick."""
+    global ebus_flow_temp, ebus_compressor_speed
+    try:
+        vals = _run_async(_read_ebus_values())
+        ebus_flow_temp        = vals.get("flow_temp")
+        ebus_compressor_speed = vals.get("compressor_speed")
+        print(f"[therminus] ebus read: flow={ebus_flow_temp}°C  compressor={ebus_compressor_speed}%")
+    except Exception as e:
+        print(f"[therminus] ebus read error: {e}")
 
 
 def _run_async(coro):
