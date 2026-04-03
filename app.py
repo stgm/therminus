@@ -65,7 +65,7 @@ sse_clients      = []
 # ── State machine ──────────────────────────────────────────────────────────────
 pump_state       = "RESTING"     # "RUNNING", "WARMING", or "RESTING"
 state_since      = datetime.now()
-t_min_rest       = T_MIN_REST_SHORT  # current rest duration (SHORT or LONG)
+t_min_rest       = T_MIN_REST_LONG   # start with long rest; shortened after room-temp stops
 
 # ── Ebus read cache ────────────────────────────────────────────────────────────
 ebus_flow_temp        = None     # hmu/RunDataFlowTemp
