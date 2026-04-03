@@ -106,7 +106,7 @@ WMO_DESC = {
 def _make_status_sentence() -> str:
     """Plain-language explanation of the current state. Called with state_lock held."""
     if current_temp is None:
-        return "Waking up — waiting for the first temperature reading."
+        return "Waking up, waiting for the first temperature reading."
 
     elapsed = (datetime.now() - state_since).total_seconds()
     diff    = current_temp - SETPOINT
