@@ -23,7 +23,7 @@ app = Flask(__name__)
 # ── Configuration ─────────────────────────────────────────────────────────────
 EBUSD_HOST       = "127.0.0.1"
 EBUSD_PORT       = 8888
-SETPOINT         = 20.5          # °C — desired room temperature
+SETPOINT         = 21.0          # °C — desired room temperature
 UPDATE_INTERVAL  = 60            # seconds — matches integral tick rate so pump gets fresh nudge every minute
 HISTORY_POINTS   = 1440         # room temp history points to keep
 
@@ -496,35 +496,29 @@ UI_HTML = r"""<!DOCTYPE html>
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
-  html {
-    height: 100%;
-  }
-
   html, body {
     background: var(--bg);
     font-family: var(--sans);
     color: var(--text);
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
+    height: 100%;
   }
 
   body {
-    min-height: 100%;
-    min-height: 100dvh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: env(safe-area-inset-top, 16px) env(safe-area-inset-right, 16px) env(safe-area-inset-bottom, 16px) env(safe-area-inset-left, 16px);
+    margin: 0;
   }
 
   .widget-scene {
     width: 100%;
     max-width: 420px;
     perspective: 1200px;
+    margin: 0 auto;
   }
 
   .widget-flipper {
     width: 100%;
+    min-height: 100dvh;
     position: relative;
     transform-style: preserve-3d;
     transition: transform 0.65s cubic-bezier(0.4, 0.2, 0.2, 1);
@@ -536,6 +530,12 @@ UI_HTML = r"""<!DOCTYPE html>
 
   .widget-face {
     width: 100%;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: env(safe-area-inset-top, 16px) 0 env(safe-area-inset-bottom, 16px);
     backface-visibility: hidden;
     -webkit-backface-visibility: hidden;
   }
@@ -545,13 +545,12 @@ UI_HTML = r"""<!DOCTYPE html>
     position: relative;
   }
 
-  /* Back face: absolutely positioned, rotated */
+  /* Back face: absolutely positioned, rotated, independently centered */
   .widget-back {
     position: absolute;
     top: 0; left: 0;
     transform: rotateY(180deg);
     background: var(--back-bg);
-    border-bottom: 1px solid var(--border);
   }
 
   /* ── ⓘ flip button — bottom-right corner of front ── */
