@@ -1,11 +1,128 @@
 """
-Therminus Controller
-Receives room temperature, computes a corrected TargetTempHc and writes it
-to ebusd via pyebus. Presents a mobile-first UI.
+Therminus — Heat Pump Controller
+=================================
+Controls a hydronic heat pump with underfloor heating (UFH) by writing a
+fake room-temperature setpoint (TargetTempHc) to the pump via ebusd/pyebus.
 
-Formula:  PI controller — nudge = Kp*error + Ki*integral
-Update:   every CONTROL_DT seconds via background thread.
-Port:     6790
+Architecture overview
+---------------------
+The app has three concurrent concerns, all running in the same process:
+
+  1. Flask web server  — serves the UI and accepts room-temperature POSTs
+                         from an external sensor (e.g. Home Assistant).
+  2. Background thread — runs the control loop every CONTROL_DT seconds,
+                         reads pump telemetry from ebusd, and pushes state
+                         updates to all connected browsers via SSE.
+  3. Asyncio loop      — a dedicated event loop (separate thread) that all
+                         pyebus coroutines are dispatched to via
+                         run_coroutine_threadsafe. This keeps async ebus I/O
+                         out of the synchronous Flask/control code.
+
+All mutable state is protected by state_lock (threading.Lock). Ebus reads
+are intentionally performed *outside* the lock to avoid blocking it during
+I/O, then the results are read inside _control_tick under the lock.
+
+Control strategy
+----------------
+The pump is controlled by writing a fake room-temperature setpoint
+(TargetTempHc) via the ebus hmu circuit. The pump maps this to a water
+temperature via its own internal heating curve (outdoor reset), so we never
+need to know or set water temperatures directly — the pump's own thermostat
+handles that layer.
+
+The outer control loop is a three-state bang-bang machine:
+
+  RESTING  →  write IDLE_TEMP (15°C) every tick. The pump sees a very low
+               setpoint and shuts down its compressor. The system rests for
+               at minimum T_MIN_REST_SHORT or T_MIN_REST_LONG seconds
+               depending on how the previous run ended.
+
+  RUNNING  →  write SETPOINT + Kp * error every tick (pure proportional).
+               This is standard heat pump room compensation: a proportional
+               nudge above or below the setpoint, clamped to [TARGET_MIN,
+               TARGET_MAX]. No integral term is used — the slow thermal mass
+               of UFH means integration adds complexity without meaningful
+               benefit, and the pump's own heating curve already provides
+               long-term correction via outdoor reset.
+
+  WARMING  →  a special state entered when the floor has gone cold during a
+               rest period (flow temp below FLOOR_COMFORT_TEMP) while the
+               outdoor temp is below WARMING_OUTDOOR_MAX. Writes SETPOINT
+               as the target and waits for the pump to decide it's done
+               (compressor stops). This lets the pump run at minimum
+               intensity to restore floor warmth without Therminus trying
+               to drive it via room temperature logic.
+
+State transitions
+-----------------
+  RESTING → RUNNING   : room temp drops below SETPOINT - BAND
+                         AND rest timer has elapsed
+  RESTING → WARMING   : room temp is at/below SETPOINT + BAND
+                         AND floor flow temp < FLOOR_COMFORT_TEMP
+                         AND outdoor temp < WARMING_OUTDOOR_MAX
+                         AND compressor is idle (not doing DHW)
+                         AND rest timer has elapsed
+  RUNNING → RESTING   : room temp rises above SETPOINT + BAND
+                         (short rest, T_MIN_REST_SHORT)
+                     OR: compressor stops AND valve was on heating circuit
+                         (long rest, T_MIN_REST_LONG)
+  WARMING → RESTING   : compressor stops AND valve was on heating circuit
+                         (long rest, T_MIN_REST_LONG)
+
+The "valve was on heating circuit" guard is critical: the pump also runs its
+compressor for domestic hot water (DHW). We use vwzio/ThreeWayValve to
+distinguish. Since the valve may already have switched back to neutral by the
+time the compressor stops, we track ebus_valve_was_heating — set to True on
+every tick where the compressor is running AND the valve is on the heating
+circuit. This sticky flag is what we check on compressor-off.
+
+On startup, if the compressor is already running for heating, we jump
+directly to RUNNING (detected on the first ebus read before any write).
+If everything is off at startup, we default to a 60-minute rest to avoid
+immediately triggering a run into an unknown state.
+
+Ebus reads
+----------
+Four values are read from ebusd in a single pyebus session per tick:
+  hmu/RunDataFlowTemp       — floor circuit flow temperature (°C)
+  hmu/RunDataCompressorSpeed — compressor speed (%, 0 = idle)
+  vwzio/ThreeWayValve       — 'heating circuit' or 'warm water circuit'
+  vwzio/OutdoorTemp         — outdoor air temperature (°C)
+
+Reads are only performed when needed:
+  - During RUNNING and WARMING: every tick (to detect compressor stop)
+  - During RESTING: only when the rest timer has elapsed and room temp
+    is within/below the band (to evaluate the WARMING trigger)
+
+Weather
+-------
+Current weather conditions are fetched from Open-Meteo (free, no API key)
+every 30 minutes and pushed to all clients via SSE. The weather icon
+respects day/night: clear-sky icons switch to moon variants after sunset
+using the is_day field from the API. Weather data is only fetched once
+server-side regardless of how many clients are connected.
+
+UI
+--
+Single-page mobile-first web app served at port 6790. The front card shows
+room temperature, current state (Heating / Warming the floor / Resting),
+a human-readable explanation of what's happening and why, and the current
+weather. Tapping the info button flips the card to reveal a technical back
+panel with the raw status string, last/next write times, state chip, and a
+room-temperature history chart for the current day.
+
+All UI updates are pushed from server to client via Server-Sent Events (SSE)
+on /api/stream. Clients never poll — they just listen. The clock and
+countdown timer are the only pieces of logic that run client-side.
+
+Sensor input
+------------
+Room temperature is POSTed to /roomtemp by an external source (e.g. a
+Home Assistant automation or a cron job calling curl). The value field
+accepts comma or dot as decimal separator and strips unit suffixes like
+"°C", so "21,4 °C" and "21.4" both work. Valid range: 5–35°C.
+
+Port: 6790
 """
 import asyncio
 import threading
@@ -23,56 +140,123 @@ app = Flask(__name__)
 # ── Configuration ─────────────────────────────────────────────────────────────
 EBUSD_HOST       = "127.0.0.1"
 EBUSD_PORT       = 8888
-SETPOINT         = 21.0          # °C — desired room temperature
-UPDATE_INTERVAL  = 60            # seconds — write to ebusd at most once per minute
-HISTORY_POINTS   = 1440          # room temp history points to keep
+
+# The desired room temperature. This is the real setpoint the occupant wants.
+# All control logic is centred around this value.
+SETPOINT         = 21.0          # °C
+
+# Minimum time between writes to ebusd. Writing more often than the sensor
+# posts (every ~5 min) is fine because the background thread updates the
+# target every CONTROL_DT seconds regardless of sensor arrivals.
+UPDATE_INTERVAL  = 60            # seconds
+
+# Number of room-temp readings to keep in memory for the history chart.
+# At one reading per ~5 minutes, 1440 points covers roughly 5 days.
+HISTORY_POINTS   = 1440
 
 # ── Proportional control ───────────────────────────────────────────────────────
-# target = clamp(SETPOINT + Kp * error, TARGET_MIN, TARGET_MAX)
-# Standard heat pump room compensation — no integral.
+# During RUNNING, the target written to the pump is:
+#   target = clamp(SETPOINT + Kp * error, TARGET_MIN, TARGET_MAX)
+# where error = SETPOINT - room_temp.
+#
+# Kp = 1.0 means: 1°C below setpoint → request 1°C above setpoint from pump.
+# This is the standard "room compensation" formula used by heat pump manufacturers.
+# No integral term is used. UFH has very slow thermal dynamics, and the pump's
+# own outdoor-reset heating curve already provides the long-term correction that
+# an integral would otherwise add. Adding an integral caused windup problems and
+# added complexity without meaningful benefit.
 KP               = 1.0
-TARGET_MIN       = 16.0          # °C — never send lower than this
-TARGET_MAX       = 24.0          # °C — never send higher than this
-CONTROL_DT       = 60            # seconds — control tick rate
+TARGET_MIN       = 16.0          # °C — safety floor; never request below this
+TARGET_MAX       = 24.0          # °C — safety ceiling; never request above this
+CONTROL_DT       = 60            # seconds — how often the control loop runs
 
 # ── Bang-bang config ───────────────────────────────────────────────────────────
-BAND             = 0.3           # °C — deadband around setpoint
-T_MIN_REST_SHORT = 30 * 60       # seconds — rest after room-temp stop
-T_MIN_REST_LONG  = 60 * 60       # seconds — rest after compressor-off stop
-IDLE_TEMP        = 15.0          # °C — target sent to pump while resting
+# The outer loop is bang-bang: the pump either runs or rests. BAND defines
+# the deadband around SETPOINT — we don't react to tiny fluctuations.
+BAND             = 0.3           # °C — half-width of deadband
+
+# After a run ends, the pump must rest before starting again. The rest duration
+# depends on *why* the run ended:
+#   - Room got warm enough (room_temp > SETPOINT + BAND): short rest.
+#     The floor is still warm; a brief pause is enough.
+#   - Compressor stopped on its own: long rest. The pump has decided it's done;
+#     respect that decision and give the floor time to distribute heat.
+T_MIN_REST_SHORT = 30 * 60       # seconds (30 min) — after room-temp stop
+T_MIN_REST_LONG  = 60 * 60       # seconds (60 min) — after compressor-off stop
+
+# During RESTING, we write this as the fake room setpoint. 15°C is far enough
+# below any real room temperature that the pump will not run its compressor for
+# space heating. (It may still run for domestic hot water — that's handled via
+# the three-way valve guard.)
+IDLE_TEMP        = 15.0          # °C
 
 # ── WARMING state config ───────────────────────────────────────────────────────
-# Entered from RESTING when floor is cold, rested long enough, outdoor cold enough.
+# WARMING is a special state for maintaining floor comfort during rest periods.
+# UFH floors lose heat slowly but feel cold underfoot once the flow temp drops
+# below a threshold. WARMING lets the pump do a gentle top-up run without
+# Therminus driving it via room temperature (the room may already be at setpoint).
+#
+# Entry conditions (all must be true, and rest timer must have elapsed):
+#   - room_temp <= SETPOINT + BAND  (room is not already too warm)
+#   - flow_temp < FLOOR_COMFORT_TEMP (floor is going cold)
+#   - outdoor_temp < WARMING_OUTDOOR_MAX (only needed in cold weather)
+#   - compressor_speed == 0  (pump is fully idle, not doing DHW)
+#
+# During WARMING we write SETPOINT as the fake room temp, giving the pump a
+# modest target to aim for. The pump's own thermostat and heating curve decide
+# how hard to run. We stay in WARMING until the compressor stops — the pump
+# knows when the floor is warm enough.
 FLOOR_COMFORT_TEMP   = 25.0      # °C — flow temp below which floor feels cold
-FLOOR_TARGET_TEMP    = 28.0      # °C — water target written during WARMING
-WARMING_OUTDOOR_MAX  = 17.0      # °C — only enter WARMING when colder than this outside
-VALVE_HEATING        = 'heating circuit'  # three-way valve value for heating mode
+WARMING_OUTDOOR_MAX  = 17.0      # °C — above this, floor cooling is slow enough to ignore
+
+# The string value the three-way valve reports when in space-heating mode.
+# Used to distinguish heating runs from domestic hot water (DHW) runs so we
+# don't misinterpret a DHW compressor stop as the end of a heating run.
+VALVE_HEATING        = 'heating circuit'
 
 # ── External API config ────────────────────────────────────────────────────────
+# Coordinates for Amsterdam — used for the Open-Meteo weather fetch.
+# Open-Meteo is free and requires no API key.
 LATITUDE         = "52.3"
 LONGITUDE        = "4.98"
-WEATHER_INTERVAL = 30 * 60      # seconds between Open-Meteo refreshes
+WEATHER_INTERVAL = 30 * 60      # seconds between weather refreshes
 
 # ── Shared state ──────────────────────────────────────────────────────────────
+# All variables below are accessed from multiple threads (Flask request handlers,
+# the background control thread, and the SSE generator). All reads and writes
+# must happen under state_lock, except where explicitly noted.
 state_lock       = threading.Lock()
-current_temp     = None          # latest room temp received
-room_history     = deque(maxlen=HISTORY_POINTS)  # {ts, value} for chart
-last_write_time  = None          # datetime of last ebusd write
-last_target      = None          # last target value written
-last_status      = "Waiting for room temperature…"
-sse_clients      = []
+current_temp     = None          # most recent room temp from sensor POST (°C)
+room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for chart
+last_write_time  = None          # datetime of last successful ebusd write
+last_target      = None          # last TargetTempHc value written (°C)
+last_status      = "Waiting for room temperature…"  # raw debug status string (back panel)
+sse_clients      = []            # list of queue.Queue, one per connected browser
 
 # ── State machine ──────────────────────────────────────────────────────────────
-pump_state       = "RESTING"     # "RUNNING", "WARMING", or "RESTING"
-state_since      = datetime.now()
-t_min_rest       = T_MIN_REST_LONG   # start with long rest; shortened after room-temp stops
+pump_state       = "RESTING"     # current state: "RUNNING", "WARMING", or "RESTING"
+state_since      = datetime.now()  # when the current state was entered
+# t_min_rest is the minimum number of seconds we must stay in RESTING before
+# the next run. It is set dynamically on each RESTING transition:
+#   T_MIN_REST_LONG  after a compressor-off stop (pump decided it was done)
+#   T_MIN_REST_SHORT after a room-temp stop (room got warm, may need heat again soon)
+# Starts at T_MIN_REST_LONG so a cold start doesn't immediately trigger heating.
+t_min_rest       = T_MIN_REST_LONG
 
 # ── Ebus read cache ────────────────────────────────────────────────────────────
-ebus_flow_temp        = None     # hmu/RunDataFlowTemp
-ebus_compressor_speed = None     # hmu/RunDataCompressorSpeed
-ebus_valve            = None     # vwzio/ThreeWayValve — current value
-ebus_valve_was_heating = False   # True if valve was on heating circuit while compressor ran
-ebus_outdoor_temp     = None     # vwzio/OutdoorTemp
+# These are written by _refresh_ebus_reads() (outside state_lock) and read by
+# _control_tick() (inside state_lock). Since Python's GIL makes individual
+# attribute reads/writes atomic for simple types, this is safe without locking —
+# worst case we use a value that's one tick stale.
+ebus_flow_temp         = None    # hmu/RunDataFlowTemp (°C) — floor circuit flow temp
+ebus_compressor_speed  = None    # hmu/RunDataCompressorSpeed (%) — 0 means idle
+ebus_valve             = None    # vwzio/ThreeWayValve — 'heating circuit' or 'warm water circuit'
+ebus_outdoor_temp      = None    # vwzio/OutdoorTemp (°C)
+# Sticky flag: True if the valve was confirmed on 'heating circuit' while the
+# compressor was running during the current RUNNING or WARMING state. We use this
+# instead of the current valve value because the valve may switch back to neutral
+# before we detect the compressor stopping, creating a race condition.
+ebus_valve_was_heating = False
 
 # ── External data cache ────────────────────────────────────────────────────────
 weather_cache    = None   # dict: {icon, desc, fetched_at}
@@ -164,7 +348,13 @@ def _fetch_url(url: str, headers: dict | None = None) -> dict | None:
         return None
 
 def _refresh_weather():
-    global weather_cache
+    """
+    Fetch current weather from Open-Meteo and push to all SSE clients.
+
+    Uses the is_day field to select night-appropriate icons for clear/partly-
+    cloudy conditions (moon phases instead of sun). Only called from the
+    background thread; never blocks Flask request handling.
+    """
     params = urllib.parse.urlencode({
         'latitude': LATITUDE, 'longitude': LONGITUDE,
         'current': 'weather_code,temperature_2m,is_day',
@@ -189,9 +379,17 @@ def _refresh_weather():
 
 def _control_tick():
     """
-    Three-state machine: RESTING / RUNNING / WARMING.
-    Must be called with state_lock held.
-    Ebus reads happen outside the lock in _tick before this is called.
+    The core three-state control machine. Called every CONTROL_DT seconds.
+
+    Must be called with state_lock held. Ebus values (flow temp, compressor
+    speed, valve, outdoor temp) are read outside the lock in _tick() before
+    this function runs, so they are always fresh when evaluated here.
+
+    The function may transition state and/or write a new target to the pump.
+    It returns a dict with at minimum {target, wrote, state}, or None if
+    current_temp is not yet known.
+
+    See module docstring for full state transition logic.
     """
     global pump_state, state_since, t_min_rest, ebus_valve_was_heating, last_write_time, last_target, last_status
 
@@ -271,29 +469,34 @@ def _control_tick():
         compressor_stopped = (ebus_compressor_speed is not None
                               and ebus_compressor_speed == 0
                               and ebus_valve_was_heating)
-        floor_warm = (ebus_flow_temp is not None
-                      and ebus_flow_temp >= FLOOR_COMFORT_TEMP)
 
-        if compressor_stopped or floor_warm:
+        if compressor_stopped:
             pump_state  = "RESTING"
             state_since = now
-            t_min_rest  = T_MIN_REST_LONG if compressor_stopped else T_MIN_REST_SHORT
-            reason      = "compressor stopped" if compressor_stopped else "floor warm"
-            print(f"[therminus] → RESTING ({reason})  flow={ebus_flow_temp}°C  "
+            t_min_rest  = T_MIN_REST_LONG
+            print(f"[therminus] → RESTING (compressor stopped)  flow={ebus_flow_temp}°C  "
                   f"rest={t_min_rest/60:.0f}min")
             _write_now(IDLE_TEMP, now)
-            last_status = f"→ RESTING ({reason})  flow={ebus_flow_temp}°C"
+            last_status = f"→ RESTING (compressor stopped)  flow={ebus_flow_temp}°C"
             return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
 
-        # Stay warming — fixed floor target, no PI
-        _write_now(FLOOR_TARGET_TEMP, now)
-        last_status = (f"WARMING  flow={ebus_flow_temp}°C → {FLOOR_TARGET_TEMP}°C  "
-                       f"ran={elapsed/60:.0f}min")
-        return {"target": FLOOR_TARGET_TEMP, "wrote": True, "state": pump_state}
+        # Stay warming — write setpoint, let pump decide when to stop
+        _write_now(SETPOINT, now)
+        last_status = (f"WARMING  flow={ebus_flow_temp}°C  ran={elapsed/60:.0f}min")
+        return {"target": SETPOINT, "wrote": True, "state": pump_state}
 
 
 def _write_now(target: float, now: datetime):
-    """Write target to ebusd unconditionally, respecting UPDATE_INTERVAL debounce."""
+    """
+    Write a TargetTempHc value to ebusd, subject to UPDATE_INTERVAL debounce.
+
+    This is the only place writes actually happen. The debounce prevents
+    flooding ebusd — at most one write per UPDATE_INTERVAL seconds. Writes
+    that fall within the interval are silently skipped; the next tick will
+    write the then-current value instead.
+
+    Must be called with state_lock held (via _control_tick).
+    """
     global last_write_time, last_target
     if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
         return
@@ -306,7 +509,20 @@ def _write_now(target: float, now: datetime):
 
 
 def _tick():
-    """Called every CONTROL_DT seconds from the background thread."""
+    """
+    One control cycle. Called every CONTROL_DT seconds by _background_refresh.
+
+    Deliberately structured to do ebus I/O *outside* state_lock and control
+    logic *inside* it, because pyebus calls are blocking (routed through the
+    asyncio loop via run_coroutine_threadsafe) and we don't want to hold the
+    lock during network/bus I/O.
+
+    Sequence:
+      1. Snapshot state (under lock) to decide whether ebus reads are needed.
+      2. Perform ebus reads if needed (outside lock).
+      3. Run _control_tick (under lock) — state machine + ebus write.
+      4. Broadcast updated state to all SSE clients (outside lock).
+    """
     with state_lock:
         state_snapshot = pump_state
         elapsed = (datetime.now() - state_since).total_seconds()
@@ -339,7 +555,20 @@ def _tick():
 
 
 def _background_refresh():
-    """Periodically refresh weather and step the PI integral."""
+    """
+    Long-running background thread. Runs for the lifetime of the process.
+
+    Responsibilities:
+      - Refresh weather from Open-Meteo every WEATHER_INTERVAL seconds.
+      - Run one control tick every CONTROL_DT seconds.
+
+    Sleeps 10 seconds between wakeups so that CONTROL_DT ticks land within
+    ±10s of their scheduled time without busy-waiting.
+
+    Note: the docstring mentions 'PI integral' in the original code — this
+    was removed. The background thread now only drives the bang-bang control
+    loop and weather refresh.
+    """
     last_weather  = 0.0
     last_integral = 0.0
     while True:
@@ -354,7 +583,20 @@ def _background_refresh():
 
 
 # ── pyebus helpers ─────────────────────────────────────────────────────────────
+# All ebus communication goes through pyebus (https://github.com/ebus/pyebus),
+# which talks to a running ebusd daemon on EBUSD_HOST:EBUSD_PORT.
+#
+# pyebus is async-only, so all calls are dispatched to the dedicated asyncio
+# loop (_loop) via asyncio.run_coroutine_threadsafe and awaited synchronously
+# with fut.result(timeout=15). This bridges the sync control thread and the
+# async pyebus API without introducing a second event loop or threading issues.
+#
+# Each call to _make_ebus() creates a fresh Ebus connection and loads message
+# definitions from ebusd. This is slightly wasteful but keeps the code simple
+# and avoids stale connection state.
+
 async def _make_ebus():
+    """Create and return a connected, msgdef-loaded Ebus instance."""
     from pyebus import Ebus
     ebus = Ebus(EBUSD_HOST, port=EBUSD_PORT)
     await ebus.async_load_msgdefs()
@@ -362,7 +604,14 @@ async def _make_ebus():
 
 
 async def _write_target(target: float):
-    """Write TargetTempHc to ebusd."""
+    """
+    Write TargetTempHc to ebusd.
+
+    TargetTempHc is the fake room-temperature setpoint that Therminus uses
+    to control the heat pump. The pump maps this to a water temperature via
+    its own heating curve (outdoor reset). By writing a value above the real
+    room temperature, we tell the pump to heat; below, to not heat.
+    """
     ebus = await _make_ebus()
     for msgdef in ebus.msgdefs:
         if msgdef.name.lower() == "targettemphc":
@@ -373,7 +622,15 @@ async def _write_target(target: float):
 
 
 async def _read_ebus_values():
-    """Read flow temp, compressor speed, three-way valve and outdoor temp from ebusd."""
+    """
+    Read four telemetry values from ebusd in a single session.
+
+    Returns a dict with keys: flow_temp, compressor_speed, valve, outdoor_temp.
+    Missing keys mean the msgdef was not found or the read failed.
+
+    pyebus async_read returns a Msg object; the actual value is in msg.values[0].
+    The valve is a string enum; all other values are floats.
+    """
     ebus = await _make_ebus()
     result = {}
     targets = {
@@ -401,8 +658,17 @@ async def _read_ebus_values():
 
 def _refresh_ebus_reads(active_run: bool = False):
     """
-    Sync wrapper — update global ebus read cache.
-    active_run=True: also update ebus_valve_was_heating while compressor is running.
+    Synchronously read ebus telemetry and update the global cache.
+
+    active_run=True should be passed when called during RUNNING or WARMING.
+    In that case, if the compressor is currently spinning and the valve is on
+    the heating circuit, ebus_valve_was_heating is set to True. This sticky
+    flag persists until the next RESTING transition so that we can correctly
+    identify a compressor stop as a heating stop even if the valve has already
+    switched away from the heating circuit by the time we detect it.
+
+    Called outside state_lock to avoid holding the lock during blocking I/O.
+    The cached values are safe to read inside the lock on the next tick.
     """
     global ebus_flow_temp, ebus_compressor_speed, ebus_valve, ebus_valve_was_heating, ebus_outdoor_temp
     try:
@@ -436,9 +702,14 @@ def _start_async_loop():
 # ── Control logic ──────────────────────────────────────────────────────────────
 def _apply_control(room_temp: float) -> dict:
     """
-    Called on sensor POST — just updates current_temp in state.
-    The control tick runs independently every CONTROL_DT seconds.
-    Lock must be held by caller.
+    Called on every sensor POST, immediately after updating current_temp.
+
+    Runs _control_tick() right away so the pump gets the fresh reading without
+    waiting up to CONTROL_DT seconds for the next background tick. This is
+    particularly useful when the room crosses a band threshold — the state
+    transition happens within seconds of the sensor posting, not minutes.
+
+    Must be called with state_lock held.
     """
     # Sensor arrival: run a control tick immediately so the pump
     # gets fresh data without waiting up to 60s.
@@ -448,6 +719,13 @@ def _apply_control(room_temp: float) -> dict:
 
 # ── SSE broadcast ──────────────────────────────────────────────────────────────
 def _broadcast(payload: str):
+    """
+    Push a JSON string to all connected SSE clients.
+
+    Each client has a Queue (maxsize=50). If a queue is full (client too slow)
+    or the client has disconnected, it is silently removed. This ensures a
+    slow or disconnected client never blocks the control thread.
+    """
     dead = []
     for q in sse_clients:
         try:
@@ -462,6 +740,13 @@ def _broadcast(payload: str):
 
 
 # ── Flask routes ───────────────────────────────────────────────────────────────
+# POST /roomtemp  — receives room temperature from an external sensor.
+#                   Accepts form data or JSON with a 'current' field.
+#                   Handles comma decimals and unit suffixes ("21,4 °C").
+# GET  /          — serves the single-page UI.
+# GET  /api/stream — SSE endpoint; browsers connect here and receive all updates.
+# GET  /api/state  — JSON snapshot of current state (for debugging/integration).
+# GET  /api/weather — JSON of latest cached weather data.
 @app.route("/")
 def index():
     return render_template_string(UI_HTML, update_interval=UPDATE_INTERVAL)
