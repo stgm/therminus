@@ -27,21 +27,20 @@
     <!-- ══════════════ FRONT FACE ══════════════ -->
     <div class="widget-face widget-front">
 
-      <div class="front-card">
+      <!-- Top left: date + time -->
+      <div class="datetime-block">
+        <div class="day-label" id="day-label">—</div>
+        <div class="time-label" id="time-label">--:--</div>
+      </div>
 
-        <!-- Row 1: date/time + weather -->
-        <div class="card-toprow">
-          <div class="datetime-block">
-            <div class="day-label" id="day-label">—</div>
-            <div class="time-label" id="time-label">--:--</div>
-          </div>
-          <div class="weather-block">
-            <div class="weather-icon" id="weather-icon">⋯</div>
-            <div class="weather-desc" id="weather-desc">loading…</div>
-          </div>
-        </div>
+      <!-- Top right: weather -->
+      <div class="weather-block">
+        <div class="weather-icon" id="weather-icon">⋯</div>
+        <div class="weather-desc" id="weather-desc">loading…</div>
+      </div>
 
-        <!-- Row 2: big temperature + action badge -->
+      <!-- Centre: temperature + state -->
+      <div class="front-center">
         <div class="temp-row">
           <span class="temp-big" id="lcd-temp">--.-</span>
           <span class="temp-unit">°C</span>
@@ -49,14 +48,13 @@
         <div id="action-badge">
           <span id="action-label">—</span>
         </div>
-
-        <!-- Row 3: status sentence -->
-        <div class="status-sentence" id="status-sentence">—</div>
-
-        <!-- ⓘ flip button -->
-        <button class="flip-btn" id="btn-flip-to-back" title="System info">i</button>
-
       </div>
+
+      <!-- Bottom: status sentence -->
+      <div class="status-sentence" id="status-sentence">—</div>
+
+      <!-- Bottom right: ⓘ flip button -->
+      <button class="flip-btn" id="btn-flip-to-back" title="System info">i</button>
 
     </div><!-- /widget-front -->
 

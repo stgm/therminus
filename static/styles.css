@@ -18,25 +18,18 @@
 
 /* ── Action state label ── */
 #action-badge {
+    margin-top: 4rem;
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 20px;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    margin-bottom: 14px;
     transition: color 0.3s;
+    text-shadow: 1px 1px 0 #000;
 }
-#action-badge.heating {
-    color: var(--heating);
-}
-#action-badge.resting {
-    color: var(--resting);
-}
-#action-badge.dhw {
-    color: var(--accent);
-}
-#action-badge.idle {
-    color: var(--text-dim);
-}
+#action-badge.heating { color: var(--heating); }
+#action-badge.resting { color: var(--resting); }
+#action-badge.dhw     { color: var(--accent); }
+#action-badge.idle    { color: rgba(255,255,255,.6); }
 
 * {
     box-sizing: border-box;
@@ -89,9 +82,13 @@ body {
     -webkit-backface-visibility: hidden;
 }
 
-/* Front face: normal flow */
+/* Front face: background image fills the face, clipped if needed */
 .widget-front {
     position: relative;
+    background-image: url('/static/backgrounds/popart.png');
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
 }
 
 /* Back face: absolutely positioned, rotated, independently centered */
@@ -169,104 +166,102 @@ body {
     FRONT FACE styles
 ───────────────────────────────────────── */
 
-/* Single front card — contains everything */
-.front-card {
-    width: calc(100% - 32px);
-    margin: 16px 16px 16px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 26px;
-    padding: 24px 26px 28px;
-    position: relative;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-}
-.front-card::before {
-    content: "";
-    position: absolute;
-    top: -60px;
-    right: -60px;
-    width: 200px;
-    height: 200px;
-    background: radial-gradient(
-        circle,
-        rgba(79, 195, 247, 0.06) 0%,
-        transparent 70%
-    );
-    pointer-events: none;
+/* Front face is a positioned canvas — all children float over the image */
+.widget-front {
+    display: block;
 }
 
-/* Row 1: date/time left, weather right */
-.card-toprow {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    margin-bottom: 20px;
-}
+/* Top left: date + time */
 .datetime-block {
+    position: absolute;
+    top: calc(env(safe-area-inset-top, 0px) + 20px);
+    left: 22px;
     display: flex;
     flex-direction: column;
     gap: 2px;
 }
 .day-label {
-    font-size: 11px;
+    font-size: 17px;
     font-weight: 500;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: #fff;
+    text-shadow: 1px 1px 0 #000;
 }
 .time-label {
     font-family: var(--mono);
     font-size: 30px;
     font-weight: 300;
     letter-spacing: -0.5px;
-    color: var(--text);
+    color: #fff;
+    text-shadow: 1px 2px 0 #000;
     line-height: 1;
 }
+
+/* Top right: weather */
 .weather-block {
+    position: absolute;
+    top: calc(env(safe-area-inset-top, 0px) + 20px);
+    right: 22px;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 3px;
 }
 .weather-icon {
-    font-size: 38px;
+    font-size: 60px;
     line-height: 1;
+    filter: drop-shadow(1px 2px 0px #000);
 }
 .weather-desc {
-    font-size: 11px;
-    color: var(--text-dim);
+    font-size: 17px;
+    color: #fff;
     font-weight: 400;
     letter-spacing: 0.04em;
     text-align: right;
+    text-shadow: 1px 1px 0 #000;
 }
 
-/* Row 2: big temperature */
+/* Centre: temperature + state badge */
+.front-center {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    white-space: nowrap;
+}
 .temp-row {
-    margin-bottom: 14px;
+    margin-bottom: 10px;
 }
 .temp-big {
     font-family: var(--mono);
-    font-size: 86px;
+    font-size: 120px;
     font-weight: 300;
     line-height: 1;
-    color: var(--accent);
+    color: #fff;
     letter-spacing: -3px;
+    text-shadow: 2px 3px 0 #000;
 }
 .temp-unit {
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 300;
-    color: var(--text-dim);
+    color: #fff;
+    text-shadow: 1px 2px 0 #000;
 }
 
-/* Row 3: status sentence */
+/* Bottom: status sentence */
 .status-sentence {
-    font-size: 14px;
-    font-weight: 300;
-    color: var(--text-dim);
-    line-height: 1.55;
+    position: absolute;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 56px);
+    left: 24px;
+    right: 24px;
+    text-align: center;
+    font-size: 22px;
+    font-weight: 400;
+    color: #fff;
+    text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+    line-height: 1.5;
     letter-spacing: 0.01em;
 }
 
