@@ -313,7 +313,7 @@ def _make_status_sentence() -> str:
         else:
             if rest_remaining > 0:
                 return dhw_prefix + f"Right where we want it. Having a rest for at least {rest_remaining/60:.0f} more min."
-            return dhw_prefix + "Temperature is spot on. No need to do anything just now."
+            return dhw_prefix + "Room temperature is spot on."
 
     elif pump_state == "RUNNING":
         if ebus_dhw_active:
