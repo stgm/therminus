@@ -213,6 +213,7 @@ WARMING_OUTDOOR_MAX  = 17.0      # °C — above this, floor cooling is slow eno
 # Used to distinguish heating runs from domestic hot water (DHW) runs so we
 # don't misinterpret a DHW compressor stop as the end of a heating run.
 VALVE_HEATING        = 'heating circuit'
+VALVE_DHW            = 'warm water circuit'
 
 # ── External API config ────────────────────────────────────────────────────────
 # Coordinates for Amsterdam — used for the Open-Meteo weather fetch.
@@ -257,6 +258,7 @@ ebus_outdoor_temp      = None    # vwzio/OutdoorTemp (°C)
 # instead of the current valve value because the valve may switch back to neutral
 # before we detect the compressor stopping, creating a race condition.
 ebus_valve_was_heating = False
+ebus_dhw_active        = False   # True when compressor on AND valve = 'warm water circuit'
 
 # ── External data cache ────────────────────────────────────────────────────────
 weather_cache    = None   # dict: {icon, desc, fetched_at}
@@ -292,6 +294,7 @@ def _make_status_sentence() -> str:
     if current_temp is None:
         return "Waking up, waiting for the first temperature reading."
 
+    dhw_prefix = "Loading hot water. " if ebus_dhw_active else ""
     elapsed = (datetime.now() - state_since).total_seconds()
     diff    = current_temp - SETPOINT
 
@@ -299,30 +302,30 @@ def _make_status_sentence() -> str:
         rest_remaining = max(0, t_min_rest - elapsed)
         if diff > BAND:
             if rest_remaining > 0:
-                return (f"Nice and cosy in here. "
+                return dhw_prefix + (f"Nice and cosy in here. "
                         f"Taking a well-deserved break for at least {rest_remaining/60:.0f} more min.")
-            return "The room is lovely and warm. Heating is off and happy to stay that way."
+            return dhw_prefix + "The room is lovely and warm. Heating is off and happy to stay that way."
         elif diff < -BAND:
             if rest_remaining > 0:
-                return (f"It's cooling down a little. Sitting tight for {rest_remaining/60:.0f} more min, "
+                return dhw_prefix + (f"It's cooling down a little. Sitting tight for {rest_remaining/60:.0f} more min, "
                         f"then we'll get things going again.")
-            return "Getting a bit cool. Heating will kick in on the next cycle."
+            return dhw_prefix + "Getting a bit cool. Heating will kick in on the next cycle."
         else:
             if rest_remaining > 0:
-                return f"Right where we want it. Having a rest for at least {rest_remaining/60:.0f} more min."
-            return "Temperature is spot on. No need to do anything just now."
+                return dhw_prefix + f"Right where we want it. Having a rest for at least {rest_remaining/60:.0f} more min."
+            return dhw_prefix + "Temperature is spot on. No need to do anything just now."
 
     elif pump_state == "RUNNING":
         if diff > BAND:
-            return "Lovely and warm now. Wrapping up and heading to rest soon."
+            return dhw_prefix + "Lovely and warm now. Wrapping up and heading to rest soon."
         elif diff < -BAND:
-            return f"Working on it. Been at it for {elapsed/60:.0f} min."
+            return dhw_prefix + f"Working on it. Been at it for {elapsed/60:.0f} min."
         else:
-            return (f"Nearly there, just making sure the warmth settles in properly. "
+            return dhw_prefix + (f"Nearly there, just making sure the warmth settles in properly. "
                     f"{elapsed/60:.0f} min in.")
 
     else:  # WARMING
-        return f"The floor was going cold, so giving it a gentle top-up. Been running for {elapsed/60:.0f} min."
+        return dhw_prefix + f"The floor was going cold, so giving it a gentle top-up. Been running for {elapsed/60:.0f} min."
 
 import ssl
 _ssl_ctx = ssl.create_default_context()
@@ -391,7 +394,7 @@ def _control_tick():
 
     See module docstring for full state transition logic.
     """
-    global pump_state, state_since, t_min_rest, ebus_valve_was_heating, last_write_time, last_target, last_status
+    global pump_state, state_since, t_min_rest, ebus_valve_was_heating, ebus_dhw_active, last_write_time, last_target, last_status
 
     if current_temp is None:
         return None
@@ -412,6 +415,11 @@ def _control_tick():
         state_since            = now
         ebus_valve_was_heating = True
         print(f"[therminus] startup: compressor already running, → RUNNING")
+
+    elif (pump_state == "RESTING"
+            and last_write_time is None
+            and ebus_dhw_active):
+        print(f"[therminus] startup: compressor running for DHW (hot water tank loading)")
 
     # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
@@ -436,7 +444,8 @@ def _control_tick():
 
         if pump_state == "RESTING":
             _write_now(IDLE_TEMP, now)
-            last_status = f"RESTING  room={current_temp:.1f}°C  rested={elapsed/60:.0f}/{t_min_rest/60:.0f}min"
+            last_status = (f"RESTING  room={current_temp:.1f}°C  rested={elapsed/60:.0f}/{t_min_rest/60:.0f}min"
+                           f"  dhw={ebus_dhw_active}")
             return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
 
     # ── RUNNING ───────────────────────────────────────────────────────────────
@@ -454,14 +463,14 @@ def _control_tick():
             print(f"[therminus] → RESTING ({reason})  room={current_temp:.1f}  "
                   f"rest={t_min_rest/60:.0f}min")
             _write_now(IDLE_TEMP, now)
-            last_status = f"→ RESTING ({reason})  room={current_temp:.1f}°C"
+            last_status = f"→ RESTING ({reason})  room={current_temp:.1f}°C  dhw={ebus_dhw_active}"
             return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
 
         # Stay running — pure proportional control
         target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
         _write_now(target, now)
         last_status = (f"RUNNING  room={current_temp:.1f}°C  err={error:+.2f}  "
-                       f"→ {target}°C  ran={elapsed/60:.0f}min")
+                       f"→ {target}°C  ran={elapsed/60:.0f}min  dhw={ebus_dhw_active}")
         return {"target": target, "wrote": True, "state": pump_state}
 
     # ── WARMING ───────────────────────────────────────────────────────────────
@@ -477,12 +486,12 @@ def _control_tick():
             print(f"[therminus] → RESTING (compressor stopped)  flow={ebus_flow_temp}°C  "
                   f"rest={t_min_rest/60:.0f}min")
             _write_now(IDLE_TEMP, now)
-            last_status = f"→ RESTING (compressor stopped)  flow={ebus_flow_temp}°C"
+            last_status = f"→ RESTING (compressor stopped)  flow={ebus_flow_temp}°C  dhw={ebus_dhw_active}"
             return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
 
         # Stay warming — write setpoint, let pump decide when to stop
         _write_now(SETPOINT, now)
-        last_status = (f"WARMING  flow={ebus_flow_temp}°C  ran={elapsed/60:.0f}min")
+        last_status = (f"WARMING  flow={ebus_flow_temp}°C  ran={elapsed/60:.0f}min  dhw={ebus_dhw_active}")
         return {"target": SETPOINT, "wrote": True, "state": pump_state}
 
 
@@ -551,6 +560,7 @@ def _tick():
             "state": result["state"],
             "status": last_status,
             "status_sentence": sentence,
+            "dhw_active": ebus_dhw_active,
         }))
 
 
@@ -670,19 +680,24 @@ def _refresh_ebus_reads(active_run: bool = False):
     Called outside state_lock to avoid holding the lock during blocking I/O.
     The cached values are safe to read inside the lock on the next tick.
     """
-    global ebus_flow_temp, ebus_compressor_speed, ebus_valve, ebus_valve_was_heating, ebus_outdoor_temp
+    global ebus_flow_temp, ebus_compressor_speed, ebus_valve, ebus_valve_was_heating, ebus_outdoor_temp, ebus_dhw_active
     try:
         vals = _run_async(_read_ebus_values())
         ebus_flow_temp        = vals.get("flow_temp")
         ebus_compressor_speed = vals.get("compressor_speed")
         ebus_valve            = vals.get("valve")
         ebus_outdoor_temp     = vals.get("outdoor_temp")
+        ebus_dhw_active = (
+            ebus_compressor_speed is not None
+            and ebus_compressor_speed > 0
+            and ebus_valve == VALVE_DHW.lower()
+        )
         # While compressor is running, track whether valve was on heating circuit
         if active_run and ebus_compressor_speed is not None and ebus_compressor_speed > 0:
             ebus_valve_was_heating = (ebus_valve == VALVE_HEATING.lower())
         print(f"[therminus] ebus: flow={ebus_flow_temp}°C  comp={ebus_compressor_speed}%  "
               f"valve={ebus_valve}  outdoor={ebus_outdoor_temp}°C  "
-              f"was_heating={ebus_valve_was_heating}")
+              f"was_heating={ebus_valve_was_heating}  dhw={ebus_dhw_active}")
     except Exception as e:
         print(f"[therminus] ebus read error: {e}")
 
@@ -785,6 +800,7 @@ def post_roomtemp():
         "state": result.get("state", pump_state),
         "status": last_status,
         "status_sentence": sentence,
+        "dhw_active": ebus_dhw_active,
     }))
 
     return jsonify({"ok": True, "ts": ts, **result})
@@ -824,6 +840,7 @@ def api_stream():
                 "status_sentence": _make_status_sentence(),
                 "history": list(room_history),
                 "weather": weather_cache,
+                "dhw_active": ebus_dhw_active,
             }
         yield f"data: {json.dumps(snap)}\n\n"
         try:
@@ -876,6 +893,39 @@ UI_HTML = r"""<!DOCTYPE html>
     --resting:    #6ee7a0;
     --mono:       'DM Mono', monospace;
     --sans:       'DM Sans', sans-serif;
+  }
+
+  /* ── Action badge (heating / resting / dhw) ── */
+  .action-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 14px; border-radius: 99px;
+    border: 1.5px solid transparent;
+    font-size: 13px; font-family: var(--sans); font-weight: 500;
+    letter-spacing: .02em;
+    transition: background .3s, border-color .3s, color .3s;
+    margin-bottom: 14px;
+  }
+  .action-badge.heating {
+    background: rgba(255,140,66,.12); border-color: rgba(255,140,66,.35);
+    color: var(--heating);
+  }
+  .action-badge.resting {
+    background: rgba(110,231,160,.08); border-color: rgba(110,231,160,.2);
+    color: var(--resting);
+  }
+  .action-badge.dhw {
+    background: rgba(96,205,255,.10); border-color: rgba(96,205,255,.3);
+    color: var(--accent);
+  }
+  .badge-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0; background: currentColor; opacity: .85;
+  }
+  .action-badge.heating .badge-dot,
+  .action-badge.dhw     .badge-dot { animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: .4; transform: scale(.8); }
+    50%       { opacity: 1;  transform: scale(1.15); }
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1296,13 +1346,30 @@ function applyState(msg) {
     document.getElementById('lcd-temp').textContent = msg.room_temp.toFixed(1);
 
   if (msg.state) {
-    const badge   = document.getElementById('action-badge');
-    const label   = document.getElementById('action-label');
-    const isRunning = msg.state === 'RUNNING';
-    const isWarming = msg.state === 'WARMING';
-    const isActive  = isRunning || isWarming;
-    badge.className = 'action-badge ' + (isWarming ? 'heating' : isRunning ? 'heating' : 'resting');
-    label.textContent = isWarming ? 'Warming the floor' : (isRunning ? 'Heating' : 'Resting');
+    const badge      = document.getElementById('action-badge');
+    const label      = document.getElementById('action-label');
+    const isRunning  = msg.state === 'RUNNING';
+    const isWarming  = msg.state === 'WARMING';
+    const isDhw      = !!msg.dhw_active;
+    const isActive   = isRunning || isWarming;
+
+    let badgeClass, badgeLabel;
+    if (isDhw) {
+      badgeClass = 'action-badge dhw';
+      badgeLabel = 'Loading hot water';
+    } else if (isWarming) {
+      badgeClass = 'action-badge heating';
+      badgeLabel = 'Warming the floor';
+    } else if (isRunning) {
+      badgeClass = 'action-badge heating';
+      badgeLabel = 'Heating';
+    } else {
+      badgeClass = 'action-badge resting';
+      badgeLabel = 'Resting';
+    }
+    badge.className   = badgeClass;
+    label.textContent = badgeLabel;
+
     const el = document.getElementById('info-state');
     if (el) {
       el.textContent = msg.state;
