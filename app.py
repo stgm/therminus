@@ -381,12 +381,6 @@ def _control_tick():
             state_since = now
             print(f"[therminus] → RUNNING  room={current_temp:.1f}")
 
-        # Floor too cold while room is still in band
-        elif (ebus_flow_temp is not None
-                and ebus_flow_temp < FLOOR_COMFORT_TEMP):
-            pump_state  = "RUNNING"
-            state_since = now
-            print(f"[therminus] → RUNNING (cold floor)  flow={ebus_flow_temp}°C  room={current_temp:.1f}")
 
         if pump_state == "IDLE":
             target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
@@ -414,8 +408,13 @@ def _control_tick():
                 print(f"[therminus] → IDLE ({reason}, no heating done)  room={current_temp:.1f}")
                 last_status = f"→ IDLE ({reason}, no heating done)  room={current_temp:.1f}°C"
             state_since = now
-            _write_now(IDLE_TEMP, now)
-            return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
+            if pump_state == "RESTING":
+                _write_now(IDLE_TEMP, now)
+                return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
+            else:  # IDLE — write proportional, not suppressed
+                target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
+                _write_now(target, now)
+                return {"target": target, "wrote": True, "state": pump_state}
 
         # Stay running — pure proportional control
         target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
