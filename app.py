@@ -241,11 +241,11 @@ def _make_status_sentence() -> str:
     if pump_state == "RESTING":
         rest_remaining = max(0, t_min_rest - elapsed)
         if diff > BAND:
-            return dhw_prefix + f"Giving the floor a rest. Resuming checks in {rest_remaining/60:.0f} min."
+            return dhw_prefix + f"Giving the floor a rest for at least {rest_remaining/60:.0f} mins."
         elif diff < -BAND:
-            return dhw_prefix + f"It's cooling down. Sitting tight for {rest_remaining/60:.0f} more min, then heating again."
+            return dhw_prefix + f"Although it's getting colder, resting for {rest_remaining/60:.0f} mins."
         else:
-            return dhw_prefix + f"Right where we want it. Letting the floor rest for {rest_remaining/60:.0f} more min."
+            return dhw_prefix + f"Letting the floor rest for {rest_remaining/60:.0f} more min."
 
     elif pump_state == "IDLE":
         if diff > BAND:
@@ -253,21 +253,20 @@ def _make_status_sentence() -> str:
         elif diff < -BAND:
             return dhw_prefix + "Getting a bit cool. Heating will kick in shortly."
         else:
-            return dhw_prefix + "Temperature is spot on. Tuning where needed."
+            return dhw_prefix + "Temperature is fine. Tuning where needed."
 
     elif pump_state == "RUNNING":
         if ebus_dhw_active:
             if diff < -BAND:
-                return "Pump is loading hot water first. Heating will start right after."
+                return "Pump is charging hot water, will start heating after."
             else:
-                return "Pump is loading hot water first. Will check whether heating is still needed after."
+                return "The hot water tank is being charged."
         if diff > BAND:
-            return "Lovely and warm now. Wrapping up and heading to rest soon."
+            return "It's getting hot already! Pump will rest soon."
         elif diff < -BAND:
-            return f"Working on it. Been at it for {elapsed/60:.0f} min."
+            return f"Heating right now! Been at it for {elapsed/60:.0f} min."
         else:
-            return (f"Nearly there, just making sure the warmth settles in properly. "
-                    f"{elapsed/60:.0f} min in.")
+            return (f"Still heating to make sure it's nice and cosy.")
 
 import ssl
 _ssl_ctx = ssl.create_default_context()
