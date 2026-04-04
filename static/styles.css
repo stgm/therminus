@@ -34,7 +34,7 @@
 #action-badge.dhw {
     color: var(--accent);
 }
-#action-badge.waiting {
+#action-badge.idle {
     color: var(--text-dim);
 }
 
