@@ -316,16 +316,18 @@ def _make_status_sentence() -> str:
             return dhw_prefix + "Temperature is spot on. No need to do anything just now."
 
     elif pump_state == "RUNNING":
+        if ebus_dhw_active:
+            if diff < -BAND:
+                return "Pump is loading hot water first. Heating will start right after."
+            else:
+                return "Pump is loading hot water first. Will check whether heating is still needed after."
         if diff > BAND:
-            return dhw_prefix + "Lovely and warm now. Wrapping up and heading to rest soon."
+            return "Lovely and warm now. Wrapping up and heading to rest soon."
         elif diff < -BAND:
-            return dhw_prefix + f"Working on it. Been at it for {elapsed/60:.0f} min."
+            return f"Working on it. Been at it for {elapsed/60:.0f} min."
         else:
-            return dhw_prefix + (f"Nearly there, just making sure the warmth settles in properly. "
+            return (f"Nearly there, just making sure the warmth settles in properly. "
                     f"{elapsed/60:.0f} min in.")
-
-    else:  # WARMING
-        return dhw_prefix + f"The floor was going cold, so giving it a gentle top-up. Been running for {elapsed/60:.0f} min."
 
 import ssl
 _ssl_ctx = ssl.create_default_context()
