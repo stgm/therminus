@@ -393,9 +393,10 @@ def _control_tick():
             print(f"[therminus] → RUNNING (cold floor)  flow={ebus_flow_temp}°C  room={current_temp:.1f}")
 
         if pump_state == "IDLE":
-            _write_now(current_temp, now)
-            last_status = (f"IDLE  room={current_temp:.1f}°C  dhw={ebus_dhw_active}")
-            return {"target": current_temp, "wrote": True, "state": pump_state}
+            target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
+            _write_now(target, now)
+            last_status = (f"IDLE  room={current_temp:.1f}°C  → {target}°C  dhw={ebus_dhw_active}")
+            return {"target": target, "wrote": True, "state": pump_state}
 
     # ── RUNNING ───────────────────────────────────────────────────────────────
     if pump_state == "RUNNING":
