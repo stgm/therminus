@@ -42,20 +42,55 @@ function applyStatusSentence(msg) {
 const dayStart = new Date(); dayStart.setHours(0,0,0,0);
 const dayEnd   = new Date(); dayEnd.setHours(23,59,59,999);
 
+const STATE_COLORS = {
+  heating: 'rgba(255,140,66,.18)',
+  resting: 'rgba(110,231,160,.10)',
+  dhw:     'rgba(96,205,255,.13)',
+  idle:    'rgba(255,255,255,.03)',
+  waiting: 'rgba(255,255,255,.03)',
+};
+
+// Build annotation boxes from a list of {ts, state} events.
+// Each event starts a band; the next event (or now) ends it.
+function buildAnnotations(events) {
+  const annotations = {};
+  const now = new Date();
+  for (let i = 0; i < events.length; i++) {
+    const start = new Date(events[i].ts.replace('T', ' '));
+    const end   = i + 1 < events.length
+      ? new Date(events[i + 1].ts.replace('T', ' '))
+      : now;
+    const color = STATE_COLORS[events[i].state] ?? 'rgba(255,255,255,.03)';
+    annotations[`band${i}`] = {
+      type: 'box',
+      xMin: start, xMax: end,
+      yMin: -Infinity, yMax: Infinity,
+      backgroundColor: color,
+      borderWidth: 0,
+    };
+  }
+  return annotations;
+}
+
+let stateEvents = [];
+
 const chart = new Chart(document.getElementById('chart').getContext('2d'), {
   type: 'line',
   data: {
     datasets: [{
       data: [],
       borderColor: '#4fc3f7',
-      backgroundColor: 'rgba(79,195,247,.06)',
-      borderWidth: 1.5, pointRadius: 0, tension: 0.4, fill: true,
+      backgroundColor: 'transparent',
+      borderWidth: 1.5, pointRadius: 0, tension: 0.4, fill: false,
       spanGaps: 10 * 60 * 1000,
     }]
   },
   options: {
     animation: false, responsive: true, maintainAspectRatio: true,
-    plugins: { legend: { display: false } },
+    plugins: {
+      legend: { display: false },
+      annotation: { annotations: {} },
+    },
     scales: {
       x: {
         type: 'time', min: dayStart, max: dayEnd,
@@ -70,6 +105,11 @@ const chart = new Chart(document.getElementById('chart').getContext('2d'), {
     }
   }
 });
+
+function refreshAnnotations() {
+  chart.options.plugins.annotation.annotations = buildAnnotations(stateEvents);
+  chart.update('none');
+}
 
 // ── State update ──────────────────────────────────────────────────────────────
 let lastWriteTime = null;
@@ -116,7 +156,8 @@ es.onmessage = (e) => {
   if (msg.type === 'snapshot') {
     for (const p of (msg.history || []))
       chart.data.datasets[0].data.push({ x: new Date(p.ts.replace('T',' ')), y: p.value });
-    chart.update('none');
+    stateEvents = msg.state_events || [];
+    refreshAnnotations();
     applyState(msg);
     if (msg.last_write) applyState(msg);
     applyWeather(msg.weather);
@@ -125,7 +166,12 @@ es.onmessage = (e) => {
   if (msg.type === 'update') {
     if (msg.room_temp != null)
       chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
-    chart.update('none');
+    if (msg.state_event) {
+      stateEvents.push(msg.state_event);
+      refreshAnnotations();
+    } else {
+      chart.update('none');
+    }
     applyState(msg);
     applyStatusSentence(msg);
     if (msg.wrote) lastWriteTime = new Date(msg.ts.replace('T',' '));

@@ -15,6 +15,7 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta
 from collections import deque
+from pathlib import Path
 from flask import Flask, Response, render_template, jsonify, request
 
 app = Flask(__name__)
@@ -111,6 +112,9 @@ WEATHER_INTERVAL = 30 * 60      # seconds between weather refreshes
 state_lock       = threading.Lock()
 current_temp     = None          # most recent room temp from sensor POST (°C)
 room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for chart
+state_events     = deque(maxlen=2000)            # list of {ts, state} — badge transitions today
+_prev_badge_cls  = None                          # last recorded badge cls for transition detection
+HISTORY_FILE     = Path("history.json")
 last_write_time  = None          # datetime of last successful ebusd write
 last_target      = None          # last TargetTempHc value written (°C)
 last_status      = "Waiting for room temperature…"  # raw debug status string (back panel)
@@ -180,6 +184,49 @@ def _make_badge() -> dict:
     if pump_state == "RESTING":
         return {"label": "Resting", "cls": "resting", "active": False}
     return {"label": "Idle", "cls": "idle", "active": False}
+
+
+def _record_state_event(badge_cls: str) -> dict | None:
+    """Append a state event if the badge class changed. Returns the new event or None."""
+    global _prev_badge_cls
+    if badge_cls == _prev_badge_cls:
+        return None
+    _prev_badge_cls = badge_cls
+    event = {"ts": datetime.now().isoformat(timespec="seconds"), "state": badge_cls}
+    state_events.append(event)
+    return event
+
+
+def _save_history():
+    """Persist today's room_history and state_events to disk."""
+    try:
+        HISTORY_FILE.write_text(json.dumps({
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "room_history": list(room_history),
+            "state_events": list(state_events),
+        }))
+    except Exception as e:
+        print(f"[therminus] history save error: {e}")
+
+
+def _load_history():
+    """Load today's history from disk on startup. Silently ignores missing/stale file."""
+    global _prev_badge_cls
+    try:
+        data = json.loads(HISTORY_FILE.read_text())
+        if data.get("date") != datetime.now().strftime("%Y-%m-%d"):
+            return
+        for p in data.get("room_history", []):
+            room_history.append(p)
+        for e in data.get("state_events", []):
+            state_events.append(e)
+        if state_events:
+            _prev_badge_cls = state_events[-1]["state"]
+        print(f"[therminus] loaded history: {len(room_history)} temp points, {len(state_events)} state events")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[therminus] history load error: {e}")
 
 
 def _make_status_sentence() -> str:
@@ -436,7 +483,10 @@ def _tick():
         result = _control_tick()
         sentence = _make_status_sentence()
         badge    = _make_badge()
+        event    = _record_state_event(badge["cls"])
         _state = pump_state
+    if event:
+        _save_history()
     if result:
         _broadcast(json.dumps({
             "type": "update",
@@ -448,6 +498,7 @@ def _tick():
             "status": last_status,
             "status_sentence": sentence,
             "badge": badge,
+            "state_event": event,
         }))
 
 
@@ -693,6 +744,9 @@ def post_roomtemp():
         result = _apply_control(value)
         sentence = _make_status_sentence()
         badge    = _make_badge()
+        event    = _record_state_event(badge["cls"])
+
+    _save_history()
 
     _broadcast(json.dumps({
         "type": "update",
@@ -704,6 +758,7 @@ def post_roomtemp():
         "status": last_status,
         "status_sentence": sentence,
         "badge": badge,
+        "state_event": event,
     }))
 
     return jsonify({"ok": True, "ts": ts, **result})
@@ -743,6 +798,7 @@ def api_stream():
                 "status_sentence": _make_status_sentence(),
                 "badge": _make_badge(),
                 "history": list(room_history),
+                "state_events": list(state_events),
                 "weather": weather_cache,
             }
         yield f"data: {json.dumps(snap)}\n\n"
@@ -781,6 +837,7 @@ if __name__ == "__main__":
         print(f"[therminus] initial rest overridden: {args.initial_rest} min "
               f"({'immediate start eligible' if args.initial_rest == 0 else 'timer already elapsed'})")
 
+    _load_history()
     threading.Thread(target=_start_async_loop, daemon=True).start()
     threading.Thread(target=_background_refresh, daemon=True).start()
     app.run(host="0.0.0.0", port=6790, debug=False, threaded=True)
