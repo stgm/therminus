@@ -430,17 +430,12 @@ def _control_tick():
                 state_since = now
                 print(f"[therminus] → RUNNING  room={current_temp:.1f}  rested={elapsed/60:.0f}min")
 
-            # WARMING trigger: room at/below setpoint, floor cold, outdoor cold, compressor idle
-            elif (current_temp <= (SETPOINT + BAND)
-                    and ebus_flow_temp is not None
-                    and ebus_flow_temp < FLOOR_COMFORT_TEMP
-                    and ebus_outdoor_temp is not None
-                    and ebus_outdoor_temp < WARMING_OUTDOOR_MAX
-                    and (ebus_compressor_speed is None or ebus_compressor_speed == 0)):
-                pump_state  = "WARMING"
+            # Floor too cold while room is still in band: run a normal heating cycle
+            elif (ebus_flow_temp is not None
+                    and ebus_flow_temp < FLOOR_COMFORT_TEMP):
+                pump_state  = "RUNNING"
                 state_since = now
-                print(f"[therminus] → WARMING  flow={ebus_flow_temp}°C  "
-                      f"outdoor={ebus_outdoor_temp}°C")
+                print(f"[therminus] → RUNNING (cold floor)  flow={ebus_flow_temp}°C  room={current_temp:.1f}")
 
         if pump_state == "RESTING":
             _write_now(IDLE_TEMP, now)
@@ -473,26 +468,6 @@ def _control_tick():
                        f"→ {target}°C  ran={elapsed/60:.0f}min  dhw={ebus_dhw_active}")
         return {"target": target, "wrote": True, "state": pump_state}
 
-    # ── WARMING ───────────────────────────────────────────────────────────────
-    if pump_state == "WARMING":
-        compressor_stopped = (ebus_compressor_speed is not None
-                              and ebus_compressor_speed == 0
-                              and ebus_valve_was_heating)
-
-        if compressor_stopped:
-            pump_state  = "RESTING"
-            state_since = now
-            t_min_rest  = T_MIN_REST_LONG
-            print(f"[therminus] → RESTING (compressor stopped)  flow={ebus_flow_temp}°C  "
-                  f"rest={t_min_rest/60:.0f}min")
-            _write_now(IDLE_TEMP, now)
-            last_status = f"→ RESTING (compressor stopped)  flow={ebus_flow_temp}°C  dhw={ebus_dhw_active}"
-            return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
-
-        # Stay warming — write setpoint, let pump decide when to stop
-        _write_now(SETPOINT, now)
-        last_status = (f"WARMING  flow={ebus_flow_temp}°C  ran={elapsed/60:.0f}min  dhw={ebus_dhw_active}")
-        return {"target": SETPOINT, "wrote": True, "state": pump_state}
 
 
 def _write_now(target: float, now: datetime):
@@ -1328,17 +1303,13 @@ function applyState(msg) {
     const badge      = document.getElementById('action-badge');
     const label      = document.getElementById('action-label');
     const isRunning  = msg.state === 'RUNNING';
-    const isWarming  = msg.state === 'WARMING';
     const isDhw      = !!msg.dhw_active;
-    const isActive   = isRunning || isWarming;
+    const isActive   = isRunning;
 
     let badgeClass, badgeLabel;
     if (isDhw) {
       badgeClass = 'dhw';
       badgeLabel = 'Loading hot water';
-    } else if (isWarming) {
-      badgeClass = 'heating';
-      badgeLabel = 'Warming the floor';
     } else if (isRunning) {
       badgeClass = 'heating';
       badgeLabel = 'Heating';
