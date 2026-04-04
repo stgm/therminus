@@ -249,7 +249,7 @@ def _make_status_sentence() -> str:
 
     elif pump_state == "IDLE":
         if diff > BAND:
-            return dhw_prefix + "Pretty warm inside! The pump won't run until it cool down a bit."
+            return dhw_prefix + "Pretty warm inside! Pump won't run for now."
         elif diff < -BAND:
             return dhw_prefix + "Getting a bit cool. Heating will kick in shortly."
         else:
