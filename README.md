@@ -38,40 +38,39 @@ heating curve (outdoor reset), so Therminus never needs to think about water
 temperatures directly — it just nudges the setpoint up or down, and the pump
 handles the rest.
 
-### The three states
+### The two states
 
-Therminus runs a three-state machine at its heart:
+Therminus runs a two-state machine:
 
 ```
-         room cool enough               floor cold + outdoor cold
-         + rested long enough           + compressor idle + rested
-RESTING ──────────────────> RUNNING     ──────────────────────────> WARMING
-   ^                           |                                        |
-   |       room warm enough    |         compressor stops               |
-   +───────────────────────────+         (heating confirmed)            |
-   ^                                                                    |
-   +────────────────────────────────────────────────────────────────────+
+                   room below band
+                   + rested                    floor cold + in band
+RESTING ───────────────────────────────────────────────────────────> RUNNING
+   ^                                                                      |
+   |              room warm / compressor stops (heating confirmed)        |
+   +──────────────────────────────────────────────────────────────────────+
 ```
 
 **RESTING** — the pump is told to idle. Therminus writes a very low fake setpoint
-(15°C) which tells the pump there is no demand for heat. The pump's compressor
-stays off. This state lasts for a minimum rest period before heating is considered
-again.
+(15°C), telling the pump there is no heat demand. The compressor stays off. This
+state lasts for a minimum rest period before heating is considered again.
+
+After the rest period, two conditions can trigger a move to RUNNING:
+
+- **Room too cold** — room temperature has dropped below `setpoint − band`. The
+  normal heating case.
+- **Floor too cold** — the floor circuit flow temperature has dropped below
+  `FLOOR_COMFORT_TEMP` (25°C) while the room is still within the band. The floor
+  has given up its heat during the rest and needs a top-up even though the room
+  itself hasn't cooled enough to trigger the normal threshold.
 
 **RUNNING** — Therminus writes a proportional setpoint based on how far the room
-is from the target temperature: `setpoint + Kp * (setpoint - room_temp)`. The
+is from the target temperature: `setpoint + Kp * (setpoint − room_temp)`. The
 pump responds by heating the floor to whatever water temperature its heating curve
 prescribes for that demand level. RUNNING ends when either:
 - the room rises above `setpoint + band` (room is warm enough), or
 - the pump's compressor stops on its own and the three-way valve confirms it was
   running in heating mode (not domestic hot water).
-
-**WARMING** — a special floor-comfort state. Entered when the rest period has
-elapsed, the room is at or near setpoint (so RUNNING would not trigger), but the
-floor circuit flow temperature has dropped below a comfort threshold. Therminus
-writes the setpoint as the fake room target, giving the pump something to heat
-toward. The pump runs at low intensity and decides on its own when it's done.
-WARMING ends when the compressor stops for heating.
 
 ### Why not a full PID controller?
 
@@ -233,8 +232,7 @@ All configuration is at the top of `app.py`. The most important settings:
 | `T_MIN_REST_SHORT`   | `1800`   | Seconds to rest after room-temp stop (30 min)        |
 | `T_MIN_REST_LONG`    | `3600`   | Seconds to rest after compressor-off stop (60 min)   |
 | `IDLE_TEMP`          | `15.0`   | Fake setpoint written while resting (°C)             |
-| `FLOOR_COMFORT_TEMP` | `25.0`   | Flow temp below which WARMING is triggered (°C)      |
-| `WARMING_OUTDOOR_MAX`| `17.0`   | WARMING only triggered when outdoor temp is below this (°C) |
+| `FLOOR_COMFORT_TEMP` | `25.0`   | Flow temp below which a cold-floor run is triggered (°C) |
 | `TARGET_MIN`         | `16.0`   | Minimum fake setpoint ever written (°C)              |
 | `TARGET_MAX`         | `24.0`   | Maximum fake setpoint ever written (°C)              |
 | `LATITUDE`           | `52.3` | Your latitude for weather fetch                    |
@@ -321,12 +319,12 @@ Add to Home Screen).
 - Day of week and current time (top left)
 - Current weather icon and outdoor temperature (top right)
 - Room temperature (large)
-- State badge: *Heating*, *Warming the floor*, or *Resting*
+- State label: *HEATING*, *LOADING HOT WATER*, or *RESTING* (all-caps monospace, coloured)
 - A plain-language sentence explaining the current situation
 
 **Back panel** (tap the ⓘ button) — shows:
 - Raw status string with technical details
-- Current state chip (RUNNING / WARMING / RESTING)
+- Current state (RUNNING / RESTING)
 - Last write time and next write countdown
 - Room temperature history chart for the current day
 
@@ -457,10 +455,8 @@ longer heating cycles — which is better for heat pump efficiency.
 
 ### The floor feels cold between runs
 
-Lower `FLOOR_COMFORT_TEMP` slightly (try 23°C). This makes WARMING trigger
-earlier. Alternatively, check `WARMING_OUTDOOR_MAX` — if the outdoor temp is
-above 17°C, WARMING never triggers. This is intentional (floor cooling is
-slower in mild weather) but you can raise the threshold if needed.
+Lower `FLOOR_COMFORT_TEMP` slightly (try 23°C). This makes the cold-floor
+trigger fire earlier, starting a heating run before the floor has cooled as far.
 
 ### The pump runs too long / does not stop when the room is warm
 
@@ -483,8 +479,8 @@ Every tick during an active run produces a log line:
 State transitions are logged explicitly:
 ```
 [therminus] → RUNNING  room=20.6  rested=62min
+[therminus] → RUNNING (cold floor)  flow=23.8°C  room=20.9
 [therminus] → RESTING (compressor stopped)  flow=36.1°C  rest=60min
-[therminus] → WARMING  flow=23.8°C  outdoor=4.2°C
 ```
 
 On startup, if the pump is already running:
