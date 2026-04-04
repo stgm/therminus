@@ -115,8 +115,13 @@ function refreshAnnotations() {
 let lastWriteTime = null;
 
 function applyState(msg) {
-  if (msg.room_temp != null)
-    document.getElementById('lcd-temp').textContent = msg.room_temp.toFixed(1);
+  if (msg.room_temp != null) {
+    const temp = msg.room_temp.toFixed(1); // "21.5"
+    const [num, dec] = temp.split('.');
+
+    document.getElementById('lcd-num').textContent = num;
+    document.getElementById('lcd-dec').textContent = dec;
+  }
 
   if (msg.badge) {
   //   document.getElementById('action-badge').className = msg.badge.cls;

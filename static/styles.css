@@ -234,21 +234,18 @@ body {
 }
 .temp-row {
     margin-bottom: 10px;
-}
-.temp-big {
     font-family: var(--mono);
-    font-size: 120px;
+    font-size: 10rem;
     font-weight: 300;
     line-height: 1;
     color: #fff;
     letter-spacing: -3px;
     text-shadow: 2px 3px 0 #000;
+    display: flex;
+    justify-content: center;
 }
-.temp-unit {
-    font-size: 28px;
-    font-weight: 300;
-    color: #fff;
-    text-shadow: 1px 2px 0 #000;
+.temp-narrow {
+    font-family: var(--sans);
 }
 
 /* Bottom: status sentence */

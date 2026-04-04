@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Therminus">
@@ -42,8 +42,10 @@
       <!-- Centre: temperature + state -->
       <div class="front-center">
         <div class="temp-row">
-          <span class="temp-big" id="lcd-temp">--.-</span>
-          <span class="temp-unit">°C</span>
+          <span class="temp-normal" id="lcd-num">&mdash;</span>
+          <span class="temp-narrow">.</span>
+          <span class="temp-normal" id="lcd-dec">&mdash;</span>
+          <!--<span class="temp-normal">º</span>-->
         </div>
 
         <!-- Bottom: status sentence -->
