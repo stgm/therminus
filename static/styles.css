@@ -20,7 +20,7 @@
 #action-badge {
     margin-top: 4rem;
     font-family: var(--mono);
-    font-size: 20px;
+    font-size: 22px;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     transition: color 0.3s;
@@ -206,7 +206,7 @@ body {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 3px;
+    /*gap: 3px;*/
 }
 .weather-icon {
     font-size: 60px;
@@ -227,9 +227,10 @@ body {
     position: absolute;
     top: 50%;
     left: 50%;
+    width: 80%;
     transform: translate(-50%, -50%);
     text-align: center;
-    white-space: nowrap;
+    /*white-space: nowrap;*/
 }
 .temp-row {
     margin-bottom: 10px;
@@ -252,11 +253,12 @@ body {
 
 /* Bottom: status sentence */
 .status-sentence {
-    position: absolute;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 56px);
-    left: 24px;
-    right: 24px;
-    text-align: center;
+    /*position: absolute;*/
+    margin-top: 4rem;
+    /*bottom: calc(env(safe-area-inset-bottom, 0px) + 56px);*/
+    /*left: 24px;*/
+    /*right: 24px;*/
+    /*text-align: center;*/
     font-size: 22px;
     font-weight: 400;
     color: #fff;

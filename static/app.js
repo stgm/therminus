@@ -119,8 +119,8 @@ function applyState(msg) {
     document.getElementById('lcd-temp').textContent = msg.room_temp.toFixed(1);
 
   if (msg.badge) {
-    document.getElementById('action-badge').className = msg.badge.cls;
-    document.getElementById('action-label').textContent = msg.badge.label;
+  //   document.getElementById('action-badge').className = msg.badge.cls;
+  //   document.getElementById('action-label').textContent = msg.badge.label;
     document.getElementById('status-dot').className =
       'status-dot ' + (msg.badge.active ? 'ok' : '');
   }
