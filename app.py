@@ -347,23 +347,18 @@ def _control_tick():
     elapsed = (now - state_since).total_seconds()
     error   = SETPOINT - current_temp
 
-    # ── Startup detection ─────────────────────────────────────────────────────
-    # If we just started and the compressor is already running for heating,
-    # jump straight to RUNNING so we can detect when it stops.
+    # ── Spontaneous run detection ─────────────────────────────────────────────
+    # If the pump starts a heating run on its own while we're IDLE (e.g. its
+    # own schedule, or a floor-cold trigger we missed), track it so we can
+    # correctly transition to RESTING when it finishes.
     if (pump_state == "IDLE"
-            and last_write_time is None       # haven't written anything yet
             and ebus_compressor_speed is not None
             and ebus_compressor_speed > 0
             and ebus_valve == VALVE_HEATING.lower()):
         pump_state             = "RUNNING"
         state_since            = now
         ebus_valve_was_heating = True
-        print(f"[therminus] startup: compressor already running, → RUNNING")
-
-    elif (pump_state == "IDLE"
-            and last_write_time is None
-            and ebus_dhw_active):
-        print(f"[therminus] startup: compressor running for DHW (hot water tank loading)")
+        print(f"[therminus] pump running spontaneously → RUNNING")
 
     # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
@@ -471,15 +466,9 @@ def _tick():
     with state_lock:
         state_snapshot = pump_state
         elapsed = (datetime.now() - state_since).total_seconds()
-        needs_floor_check = (state_snapshot == "IDLE"
-                             and current_temp is not None
-                             and current_temp <= (SETPOINT + BAND))
-
     # Ebus reads outside the lock (blocking I/O)
-    if state_snapshot == "RUNNING":
-        _refresh_ebus_reads(active_run=True)
-    elif needs_floor_check:
-        _refresh_ebus_reads(active_run=False)
+    if state_snapshot in ("RUNNING", "IDLE"):
+        _refresh_ebus_reads(active_run=(state_snapshot == "RUNNING"))
 
     with state_lock:
         result = _control_tick()
@@ -733,14 +722,9 @@ def post_roomtemp():
         room_history.append({"ts": ts, "value": value})
         state_snapshot = pump_state
         elapsed_snap   = (datetime.now() - state_since).total_seconds()
-        needs_floor_check = (state_snapshot == "IDLE"
-                             and value <= (SETPOINT + BAND))
-
     # Ebus reads outside the lock (blocking I/O)
-    if state_snapshot == "RUNNING":
-        _refresh_ebus_reads(active_run=True)
-    elif needs_floor_check:
-        _refresh_ebus_reads(active_run=False)
+    if state_snapshot in ("RUNNING", "IDLE"):
+        _refresh_ebus_reads(active_run=(state_snapshot == "RUNNING"))
 
     with state_lock:
         result = _apply_control(value)
