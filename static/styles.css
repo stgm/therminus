@@ -111,13 +111,14 @@ body {
     width: 26px;
     height: 26px;
     border-radius: 50%;
-    border: 1.5px solid var(--border);
+    /*border: 1.5px solid var(--border);*/
     background: rgba(30, 35, 51, 0.85);
     backdrop-filter: blur(4px);
     color: var(--text-dim);
     font-size: 13px;
-    font-family: var(--sans);
+    font-family: var(--mono);
     font-weight: 500;
+    font-style: italic;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -133,9 +134,9 @@ body {
 }
 .flip-btn:hover,
 .flip-btn:active {
-    border-color: var(--accent);
+    /*border-color: var(--accent);*/
     color: var(--accent);
-    background: rgba(79, 195, 247, 0.08);
+    /*background: rgba(79, 195, 247, 0.08);*/
 }
 .is-flipped .flip-btn {
     visibility: hidden;
