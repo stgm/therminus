@@ -895,38 +895,18 @@ UI_HTML = r"""<!DOCTYPE html>
     --sans:       'DM Sans', sans-serif;
   }
 
-  /* ── Action badge (heating / resting / dhw) ── */
-  .action-badge {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 5px 14px; border-radius: 99px;
-    border: 1.5px solid transparent;
-    font-size: 13px; font-family: var(--sans); font-weight: 500;
-    letter-spacing: .02em;
-    transition: background .3s, border-color .3s, color .3s;
+  /* ── Action state label ── */
+  #action-badge {
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
     margin-bottom: 14px;
+    transition: color .3s;
   }
-  .action-badge.heating {
-    background: rgba(255,140,66,.12); border-color: rgba(255,140,66,.35);
-    color: var(--heating);
-  }
-  .action-badge.resting {
-    background: rgba(110,231,160,.08); border-color: rgba(110,231,160,.2);
-    color: var(--resting);
-  }
-  .action-badge.dhw {
-    background: rgba(96,205,255,.10); border-color: rgba(96,205,255,.3);
-    color: var(--accent);
-  }
-  .badge-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    flex-shrink: 0; background: currentColor; opacity: .85;
-  }
-  .action-badge.heating .badge-dot,
-  .action-badge.dhw     .badge-dot { animation: pulse 1.8s ease-in-out infinite; }
-  @keyframes pulse {
-    0%, 100% { opacity: .4; transform: scale(.8); }
-    50%       { opacity: 1;  transform: scale(1.15); }
-  }
+  #action-badge.heating { color: var(--heating); }
+  #action-badge.resting { color: var(--resting); }
+  #action-badge.dhw     { color: var(--accent); }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1206,8 +1186,7 @@ UI_HTML = r"""<!DOCTYPE html>
           <span class="temp-big" id="lcd-temp">--.-</span>
           <span class="temp-unit">°C</span>
         </div>
-        <div class="action-badge" id="action-badge">
-          <span class="badge-dot"></span>
+        <div id="action-badge">
           <span id="action-label">—</span>
         </div>
 
@@ -1355,16 +1334,16 @@ function applyState(msg) {
 
     let badgeClass, badgeLabel;
     if (isDhw) {
-      badgeClass = 'action-badge dhw';
+      badgeClass = 'dhw';
       badgeLabel = 'Loading hot water';
     } else if (isWarming) {
-      badgeClass = 'action-badge heating';
+      badgeClass = 'heating';
       badgeLabel = 'Warming the floor';
     } else if (isRunning) {
-      badgeClass = 'action-badge heating';
+      badgeClass = 'heating';
       badgeLabel = 'Heating';
     } else {
-      badgeClass = 'action-badge resting';
+      badgeClass = 'resting';
       badgeLabel = 'Resting';
     }
     badge.className   = badgeClass;
