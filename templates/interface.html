@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Therminus">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f1117">
+<title>Therminus</title>
+<script>
+  var app_update_interval = '{{ update_interval }}';
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+
+<div class="widget-scene">
+  <div class="widget-flipper" id="flipper">
+
+    <!-- ══════════════ FRONT FACE ══════════════ -->
+    <div class="widget-face widget-front">
+
+      <div class="front-card">
+
+        <!-- Row 1: date/time + weather -->
+        <div class="card-toprow">
+          <div class="datetime-block">
+            <div class="day-label" id="day-label">—</div>
+            <div class="time-label" id="time-label">--:--</div>
+          </div>
+          <div class="weather-block">
+            <div class="weather-icon" id="weather-icon">⋯</div>
+            <div class="weather-desc" id="weather-desc">loading…</div>
+          </div>
+        </div>
+
+        <!-- Row 2: big temperature + action badge -->
+        <div class="temp-row">
+          <span class="temp-big" id="lcd-temp">--.-</span>
+          <span class="temp-unit">°C</span>
+        </div>
+        <div id="action-badge">
+          <span id="action-label">—</span>
+        </div>
+
+        <!-- Row 3: status sentence -->
+        <div class="status-sentence" id="status-sentence">—</div>
+
+        <!-- ⓘ flip button -->
+        <button class="flip-btn" id="btn-flip-to-back" title="System info">ⓘ</button>
+
+      </div>
+
+    </div><!-- /widget-front -->
+
+    <!-- ══════════════ BACK FACE ══════════════ -->
+    <div class="widget-face widget-back" id="back-face">
+
+      <div class="back-header">
+        <div class="back-title">System Info</div>
+        <button class="done-btn" id="btn-flip-to-front">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M9 3L3 9M3 3l6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          Done
+        </button>
+      </div>
+
+      <div class="status-pill">
+        <div class="status-dot" id="status-dot"></div>
+        <span class="status-text" id="status-text">Connecting…</span>
+      </div>
+
+      <div class="chip-grid">
+        <div class="chip">
+          <div class="chip-label">State</div>
+          <div class="chip-val" id="info-state">—</div>
+        </div>
+        <div class="chip">
+          <div class="chip-label">Last write</div>
+          <div class="chip-val" id="info-write">—</div>
+        </div>
+        <div class="chip">
+          <div class="chip-label">Next write</div>
+          <div class="chip-val" id="info-next">—</div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-title">Room Temperature — Today</div>
+        <canvas id="chart" height="120"></canvas>
+      </div>
+
+    </div><!-- /widget-back -->
+
+  </div><!-- /widget-flipper -->
+</div><!-- /widget-scene -->
+</body>
+</html>

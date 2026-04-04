@@ -1,0 +1,390 @@
+:root {
+    --bg: #0c0e14;
+    --surface: #13161f;
+    --card: #191d2a;
+    --border: #252b3d;
+    --accent: #60cdff;
+    --accent2: #6ee7a0;
+    --warn: #ffc14d;
+    --red: #ff6b6b;
+    --text: #f0f2f8;
+    --text-dim: #6b7590;
+    --back-bg: #10121a;
+    --heating: #ff8c42;
+    --resting: #6ee7a0;
+    --mono: "DM Mono", monospace;
+    --sans: "DM Sans", sans-serif;
+}
+
+/* ── Action state label ── */
+#action-badge {
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    transition: color 0.3s;
+}
+#action-badge.heating {
+    color: var(--heating);
+}
+#action-badge.resting {
+    color: var(--resting);
+}
+#action-badge.dhw {
+    color: var(--accent);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html,
+body {
+    background: var(--bg);
+    font-family: var(--sans);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    height: 100%;
+}
+
+body {
+    margin: 0;
+}
+
+.widget-scene {
+    width: 100%;
+    max-width: 420px;
+    perspective: 1200px;
+    margin: 0 auto;
+}
+
+.widget-flipper {
+    width: 100%;
+    min-height: 100dvh;
+    position: relative;
+    transform-style: preserve-3d;
+    transition: transform 0.65s cubic-bezier(0.4, 0.2, 0.2, 1);
+}
+
+.widget-flipper.is-flipped {
+    transform: rotateY(180deg);
+}
+
+.widget-face {
+    width: 100%;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: env(safe-area-inset-top, 16px) 0 env(safe-area-inset-bottom, 16px);
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+}
+
+/* Front face: normal flow */
+.widget-front {
+    position: relative;
+}
+
+/* Back face: absolutely positioned, rotated, independently centered */
+.widget-back {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform: rotateY(180deg);
+    background: var(--back-bg);
+}
+
+/* ── ⓘ flip button — bottom-right corner of front ── */
+.flip-btn {
+    position: absolute;
+    bottom: 18px;
+    right: 20px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border);
+    background: rgba(30, 35, 51, 0.85);
+    backdrop-filter: blur(4px);
+    color: var(--text-dim);
+    font-size: 13px;
+    font-family: var(--sans);
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+        border-color 0.2s,
+        color 0.2s,
+        background 0.2s;
+    z-index: 10;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    line-height: 1;
+}
+.flip-btn:hover,
+.flip-btn:active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(79, 195, 247, 0.08);
+}
+.is-flipped .flip-btn {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* ── Done button on back ── */
+.done-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 16px;
+    border-radius: 99px;
+    border: 1.5px solid var(--accent);
+    background: rgba(79, 195, 247, 0.1);
+    color: var(--accent);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+    -webkit-tap-highlight-color: transparent;
+}
+.done-btn:hover,
+.done-btn:active {
+    background: rgba(79, 195, 247, 0.2);
+}
+
+/* ─────────────────────────────────────────
+    FRONT FACE styles
+───────────────────────────────────────── */
+
+/* Single front card — contains everything */
+.front-card {
+    width: calc(100% - 32px);
+    margin: 16px 16px 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 26px;
+    padding: 24px 26px 28px;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+.front-card::before {
+    content: "";
+    position: absolute;
+    top: -60px;
+    right: -60px;
+    width: 200px;
+    height: 200px;
+    background: radial-gradient(
+        circle,
+        rgba(79, 195, 247, 0.06) 0%,
+        transparent 70%
+    );
+    pointer-events: none;
+}
+
+/* Row 1: date/time left, weather right */
+.card-toprow {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+.datetime-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.day-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+.time-label {
+    font-family: var(--mono);
+    font-size: 30px;
+    font-weight: 300;
+    letter-spacing: -0.5px;
+    color: var(--text);
+    line-height: 1;
+}
+.weather-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+}
+.weather-icon {
+    font-size: 38px;
+    line-height: 1;
+}
+.weather-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    text-align: right;
+}
+
+/* Row 2: big temperature */
+.temp-row {
+    margin-bottom: 14px;
+}
+.temp-big {
+    font-family: var(--mono);
+    font-size: 86px;
+    font-weight: 300;
+    line-height: 1;
+    color: var(--accent);
+    letter-spacing: -3px;
+}
+.temp-unit {
+    font-size: 26px;
+    font-weight: 300;
+    color: var(--text-dim);
+}
+
+/* Row 3: status sentence */
+.status-sentence {
+    font-size: 14px;
+    font-weight: 300;
+    color: var(--text-dim);
+    line-height: 1.55;
+    letter-spacing: 0.01em;
+}
+
+/* ─────────────────────────────────────────
+    BACK FACE styles
+───────────────────────────────────────── */
+.back-header {
+    width: 100%;
+    padding: 20px 20px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.back-title {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+/* Status pill */
+.status-pill {
+    width: calc(100% - 32px);
+    margin: 0 16px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+}
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+    transition: background 0.4s;
+}
+.status-dot.ok {
+    background: var(--accent2);
+    box-shadow: 0 0 6px var(--accent2);
+}
+.status-dot.warn {
+    background: var(--warn);
+    box-shadow: 0 0 6px var(--warn);
+}
+.status-dot.err {
+    background: var(--red);
+    box-shadow: 0 0 6px var(--red);
+}
+.status-text {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Info chips */
+.chip-grid {
+    width: calc(100% - 32px);
+    margin: 0 16px 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.chip {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.chip-label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+.chip-val {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 400;
+    color: var(--text);
+}
+.chip-val.ok {
+    color: var(--accent2);
+}
+.chip-val.warn {
+    color: var(--warn);
+}
+.chip-val.err {
+    color: var(--red);
+}
+
+/* Chart */
+.chart-card {
+    width: calc(100% - 32px);
+    margin: 0 16px 20px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px 14px 10px;
+}
+.chart-title {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+}
+canvas {
+    display: block;
+    width: 100% !important;
+}

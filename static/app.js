@@ -1,0 +1,150 @@
+// ── Flip logic ────────────────────────────────────────────────────────────────
+const flipper   = document.getElementById('flipper');
+const backFace  = document.getElementById('back-face');
+
+function flip(showBack) {
+  flipper.classList.toggle('is-flipped', showBack);
+  // Sync back-face height to front so the scene doesn't collapse
+  if (showBack) {
+    // let it render first
+    requestAnimationFrame(() => {
+      backFace.style.minHeight = flipper.offsetHeight + 'px';
+    });
+  }
+}
+
+document.getElementById('btn-flip-to-back').addEventListener('click', () => flip(true));
+document.getElementById('btn-flip-to-front').addEventListener('click', () => flip(false));
+
+// ── Clock + date ──────────────────────────────────────────────────────────────
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+function updateClock() {
+  const now = new Date();
+  document.getElementById('day-label').textContent = DAYS[now.getDay()];
+  document.getElementById('time-label').textContent =
+    now.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+}
+updateClock();
+setInterval(updateClock, 10000);
+
+// ── Weather + status sentence: applied from SSE ───────────────────────────────
+function applyWeather(w) {
+  if (!w) return;
+  document.getElementById('weather-icon').textContent = w.icon ?? '🌡️';
+  document.getElementById('weather-desc').textContent = w.desc ?? '';
+}
+function applyStatusSentence(msg) {
+  if (msg.status_sentence != null)
+    document.getElementById('status-sentence').textContent = msg.status_sentence;
+}
+
+// ── Chart ─────────────────────────────────────────────────────────────────────
+const dayStart = new Date(); dayStart.setHours(0,0,0,0);
+const dayEnd   = new Date(); dayEnd.setHours(23,59,59,999);
+
+const chart = new Chart(document.getElementById('chart').getContext('2d'), {
+  type: 'line',
+  data: {
+    datasets: [{
+      data: [],
+      borderColor: '#4fc3f7',
+      backgroundColor: 'rgba(79,195,247,.06)',
+      borderWidth: 1.5, pointRadius: 0, tension: 0.4, fill: true,
+      spanGaps: 10 * 60 * 1000,
+    }]
+  },
+  options: {
+    animation: false, responsive: true, maintainAspectRatio: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        type: 'time', min: dayStart, max: dayEnd,
+        time: { unit: 'hour', displayFormats: { hour: 'HH:mm' } },
+        ticks: { color: '#7a8099', font: { family: "'DM Mono'", size: 10 }, maxTicksLimit: 8, maxRotation: 0 },
+        grid: { color: 'rgba(255,255,255,.04)' }, border: { color: 'transparent' }
+      },
+      y: {
+        ticks: { color: '#7a8099', font: { family: "'DM Mono'", size: 10 } },
+        grid: { color: 'rgba(255,255,255,.04)' }, border: { color: 'transparent' }
+      }
+    }
+  }
+});
+
+// ── State update ──────────────────────────────────────────────────────────────
+let lastWriteTime = null;
+
+function applyState(msg) {
+  if (msg.room_temp != null)
+    document.getElementById('lcd-temp').textContent = msg.room_temp.toFixed(1);
+
+  if (msg.state) {
+    const badge      = document.getElementById('action-badge');
+    const label      = document.getElementById('action-label');
+    const isRunning  = msg.state === 'RUNNING';
+    const isDhw      = !!msg.dhw_active;
+    const isActive   = isRunning;
+
+    let badgeClass, badgeLabel;
+    if (isDhw) {
+      badgeClass = 'dhw';
+      badgeLabel = 'Loading hot water';
+    } else if (isRunning) {
+      badgeClass = 'heating';
+      badgeLabel = 'Heating';
+    } else {
+      badgeClass = 'resting';
+      badgeLabel = 'Resting';
+    }
+    badge.className   = badgeClass;
+    label.textContent = badgeLabel;
+
+    const el = document.getElementById('info-state');
+    if (el) {
+      el.textContent = msg.state;
+      el.className = 'chip-val ' + (isActive ? 'ok' : 'warn');
+    }
+    document.getElementById('status-dot').className =
+      'status-dot ' + (isActive ? 'ok' : '');
+  }
+
+  if (msg.status)
+    document.getElementById('status-text').textContent = msg.status;
+
+  if (msg.last_write) {
+    lastWriteTime = new Date(msg.last_write.replace('T',' '));
+    document.getElementById('info-write').textContent =
+      lastWriteTime.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+  }
+}
+
+function updateNextWrite() {
+  if (!lastWriteTime) return;
+  const remaining = Math.max(0, app_update_interval - (Date.now() - lastWriteTime) / 1000);
+  document.getElementById('info-next').textContent = remaining > 0 ? Math.ceil(remaining) + 's' : 'now';
+}
+setInterval(updateNextWrite, 1000);
+
+// ── SSE ───────────────────────────────────────────────────────────────────────
+const es = new EventSource('/api/stream');
+es.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  if (msg.type === 'snapshot') {
+    for (const p of (msg.history || []))
+      chart.data.datasets[0].data.push({ x: new Date(p.ts.replace('T',' ')), y: p.value });
+    chart.update('none');
+    applyState(msg);
+    if (msg.last_write) applyState(msg);
+    applyWeather(msg.weather);
+    applyStatusSentence(msg);
+  }
+  if (msg.type === 'update') {
+    if (msg.room_temp != null)
+      chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
+    chart.update('none');
+    applyState(msg);
+    applyStatusSentence(msg);
+    if (msg.wrote) lastWriteTime = new Date(msg.ts.replace('T',' '));
+  }
+  if (msg.type === 'weather') applyWeather(msg);
+};
