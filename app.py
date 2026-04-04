@@ -623,7 +623,7 @@ async def _read_ebus_values():
     targets = {
         "rundataflowtemp":       "flow_temp",
         "rundatacompressorspeed":"compressor_speed",
-        "threewayvvalve":        "valve",   # vwzio/ThreeWayValve
+        "threewayvalve":         "valve",   # vwzio/ThreeWayValve
         "outdoortemp":           "outdoor_temp",  # vwzio/OutdoorTemp
     }
     for msgdef in ebus.msgdefs:
