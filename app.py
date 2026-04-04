@@ -271,6 +271,7 @@ def _refresh_weather():
     desc = WMO_DESC.get(code, 'Unknown')
     outside_temp = cur.get('temperature_2m')
     desc_str = f"{desc} · {outside_temp:.1f}°C outside" if outside_temp is not None else desc
+    global weather_cache
     weather_cache = {'icon': icon, 'desc': desc_str, 'fetched_at': time.time()}
     _broadcast(json.dumps({'type': 'weather', 'icon': icon, 'desc': desc_str}))
     print(f'[therminus] weather refreshed: {icon} {desc_str}')
