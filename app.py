@@ -117,7 +117,7 @@ last_status      = "Waiting for room temperature…"  # raw debug status string 
 sse_clients      = []            # list of queue.Queue, one per connected browser
 
 # ── State machine ──────────────────────────────────────────────────────────────
-pump_state       = "RESTING"     # current state: "RUNNING", "WARMING", or "RESTING"
+pump_state       = "WAITING"     # current state: "RUNNING", "RESTING", or "WAITING"
 state_since      = datetime.now()  # when the current state was entered
 # t_min_rest is the minimum number of seconds we must stay in RESTING before
 # the next run. It is set dynamically on each RESTING transition:
@@ -177,7 +177,9 @@ def _make_badge() -> dict:
         return {"label": "Loading hot water", "cls": "dhw", "active": False}
     if pump_state == "RUNNING":
         return {"label": "Heating", "cls": "heating", "active": True}
-    return {"label": "Resting", "cls": "resting", "active": False}
+    if pump_state == "RESTING":
+        return {"label": "Resting", "cls": "resting", "active": False}
+    return {"label": "Waiting", "cls": "waiting", "active": False}
 
 
 def _make_status_sentence() -> str:
@@ -192,19 +194,19 @@ def _make_status_sentence() -> str:
     if pump_state == "RESTING":
         rest_remaining = max(0, t_min_rest - elapsed)
         if diff > BAND:
-            if rest_remaining > 0:
-                return dhw_prefix + (f"Nice and cosy in here. "
-                        f"Taking a well-deserved break for at least {rest_remaining/60:.0f} more min.")
-            return dhw_prefix + "The room is lovely and warm. Heating is off and happy to stay that way."
+            return dhw_prefix + f"Giving the floor a rest. Resuming checks in {rest_remaining/60:.0f} min."
         elif diff < -BAND:
-            if rest_remaining > 0:
-                return dhw_prefix + (f"It's cooling down a little. Sitting tight for {rest_remaining/60:.0f} more min, "
-                        f"then we'll get things going again.")
-            return dhw_prefix + "Getting a bit cool. Heating will kick in on the next cycle."
+            return dhw_prefix + f"It's cooling down. Sitting tight for {rest_remaining/60:.0f} more min, then heating again."
         else:
-            if rest_remaining > 0:
-                return dhw_prefix + f"Right where we want it. Having a rest for at least {rest_remaining/60:.0f} more min."
-            return dhw_prefix + "Room temperature is spot on."
+            return dhw_prefix + f"Right where we want it. Letting the floor rest for {rest_remaining/60:.0f} more min."
+
+    elif pump_state == "WAITING":
+        if diff > BAND:
+            return dhw_prefix + "The room is lovely and warm. Watching and ready."
+        elif diff < -BAND:
+            return dhw_prefix + "Getting a bit cool. Heating will kick in shortly."
+        else:
+            return dhw_prefix + "Temperature is spot on. Watching conditions."
 
     elif pump_state == "RUNNING":
         if ebus_dhw_active:
@@ -299,7 +301,7 @@ def _control_tick():
     # ── Startup detection ─────────────────────────────────────────────────────
     # If we just started and the compressor is already running for heating,
     # jump straight to RUNNING so we can detect when it stops.
-    if (pump_state == "RESTING"
+    if (pump_state == "WAITING"
             and last_write_time is None       # haven't written anything yet
             and ebus_compressor_speed is not None
             and ebus_compressor_speed > 0
@@ -309,7 +311,7 @@ def _control_tick():
         ebus_valve_was_heating = True
         print(f"[therminus] startup: compressor already running, → RUNNING")
 
-    elif (pump_state == "RESTING"
+    elif (pump_state == "WAITING"
             and last_write_time is None
             and ebus_dhw_active):
         print(f"[therminus] startup: compressor running for DHW (hot water tank loading)")
@@ -317,23 +319,34 @@ def _control_tick():
     # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
         if elapsed >= t_min_rest:
-            # Normal trigger: room has cooled below band
-            if current_temp < (SETPOINT - BAND):
-                pump_state  = "RUNNING"
-                state_since = now
-                print(f"[therminus] → RUNNING  room={current_temp:.1f}  rested={elapsed/60:.0f}min")
-
-            # Floor too cold while room is still in band: run a normal heating cycle
-            elif (ebus_flow_temp is not None
-                    and ebus_flow_temp < FLOOR_COMFORT_TEMP):
-                pump_state  = "RUNNING"
-                state_since = now
-                print(f"[therminus] → RUNNING (cold floor)  flow={ebus_flow_temp}°C  room={current_temp:.1f}")
+            pump_state  = "WAITING"
+            state_since = now
+            print(f"[therminus] → WAITING  rested={elapsed/60:.0f}min")
 
         if pump_state == "RESTING":
             _write_now(IDLE_TEMP, now)
             last_status = (f"RESTING  room={current_temp:.1f}°C  rested={elapsed/60:.0f}/{t_min_rest/60:.0f}min"
                            f"  dhw={ebus_dhw_active}")
+            return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
+
+    # ── WAITING ───────────────────────────────────────────────────────────────
+    if pump_state == "WAITING":
+        # Normal trigger: room has cooled below band
+        if current_temp < (SETPOINT - BAND):
+            pump_state  = "RUNNING"
+            state_since = now
+            print(f"[therminus] → RUNNING  room={current_temp:.1f}")
+
+        # Floor too cold while room is still in band
+        elif (ebus_flow_temp is not None
+                and ebus_flow_temp < FLOOR_COMFORT_TEMP):
+            pump_state  = "RUNNING"
+            state_since = now
+            print(f"[therminus] → RUNNING (cold floor)  flow={ebus_flow_temp}°C  room={current_temp:.1f}")
+
+        if pump_state == "WAITING":
+            _write_now(IDLE_TEMP, now)
+            last_status = (f"WAITING  room={current_temp:.1f}°C  dhw={ebus_dhw_active}")
             return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
 
     # ── RUNNING ───────────────────────────────────────────────────────────────
@@ -344,19 +357,19 @@ def _control_tick():
         room_warm = current_temp > (SETPOINT + BAND)
 
         if room_warm or compressor_stopped:
-            pump_state  = "RESTING"
-            state_since = now
-            if not ebus_valve_was_heating:
-                t_min_rest = 0
-            elif compressor_stopped:
-                t_min_rest = T_MIN_REST_LONG
+            if ebus_valve_was_heating:
+                pump_state = "RESTING"
+                t_min_rest = T_MIN_REST_LONG if compressor_stopped else T_MIN_REST_SHORT
+                reason     = "compressor stopped" if compressor_stopped else "room warm"
+                print(f"[therminus] → RESTING ({reason})  room={current_temp:.1f}  rest={t_min_rest/60:.0f}min")
+                last_status = f"→ RESTING ({reason})  room={current_temp:.1f}°C"
             else:
-                t_min_rest = T_MIN_REST_SHORT
-            reason      = "compressor stopped" if compressor_stopped else "room warm"
-            print(f"[therminus] → RESTING ({reason})  room={current_temp:.1f}  "
-                  f"rest={t_min_rest/60:.0f}min")
+                pump_state = "WAITING"
+                reason     = "compressor stopped" if compressor_stopped else "room warm"
+                print(f"[therminus] → WAITING ({reason}, no heating done)  room={current_temp:.1f}")
+                last_status = f"→ WAITING ({reason}, no heating done)  room={current_temp:.1f}°C"
+            state_since = now
             _write_now(IDLE_TEMP, now)
-            last_status = f"→ RESTING ({reason})  room={current_temp:.1f}°C  dhw={ebus_dhw_active}"
             return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
 
         # Stay running — pure proportional control
@@ -408,13 +421,12 @@ def _tick():
     with state_lock:
         state_snapshot = pump_state
         elapsed = (datetime.now() - state_since).total_seconds()
-        needs_floor_check = (state_snapshot == "RESTING"
+        needs_floor_check = (state_snapshot == "WAITING"
                              and current_temp is not None
-                             and elapsed >= t_min_rest
                              and current_temp <= (SETPOINT + BAND))
 
     # Ebus reads outside the lock (blocking I/O)
-    if state_snapshot in ("RUNNING", "WARMING"):
+    if state_snapshot == "RUNNING":
         _refresh_ebus_reads(active_run=True)
     elif needs_floor_check:
         _refresh_ebus_reads(active_run=False)
@@ -667,8 +679,7 @@ def post_roomtemp():
         room_history.append({"ts": ts, "value": value})
         state_snapshot = pump_state
         elapsed_snap   = (datetime.now() - state_since).total_seconds()
-        needs_floor_check = (state_snapshot == "RESTING"
-                             and elapsed_snap >= t_min_rest
+        needs_floor_check = (state_snapshot == "WAITING"
                              and value <= (SETPOINT + BAND))
 
     # Ebus reads outside the lock (blocking I/O)
