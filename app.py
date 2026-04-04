@@ -383,10 +383,15 @@ def _control_tick():
 
 
         if pump_state == "IDLE":
-            target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
-            _write_now(target, now)
-            last_status = (f"IDLE  room={current_temp:.1f}°C  → {target}°C  dhw={ebus_dhw_active}")
-            return {"target": target, "wrote": True, "state": pump_state}
+            if current_temp > (SETPOINT + BAND):
+                _write_now(IDLE_TEMP, now)
+                last_status = (f"IDLE  room={current_temp:.1f}°C  → {IDLE_TEMP}°C (warm, suppressed)  dhw={ebus_dhw_active}")
+                return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
+            else:
+                target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
+                _write_now(target, now)
+                last_status = (f"IDLE  room={current_temp:.1f}°C  → {target}°C  dhw={ebus_dhw_active}")
+                return {"target": target, "wrote": True, "state": pump_state}
 
     # ── RUNNING ───────────────────────────────────────────────────────────────
     if pump_state == "RUNNING":
