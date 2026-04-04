@@ -78,34 +78,18 @@ function applyState(msg) {
   if (msg.room_temp != null)
     document.getElementById('lcd-temp').textContent = msg.room_temp.toFixed(1);
 
+  if (msg.badge) {
+    document.getElementById('action-badge').className = msg.badge.cls;
+    document.getElementById('action-label').textContent = msg.badge.label;
+    document.getElementById('status-dot').className =
+      'status-dot ' + (msg.badge.active ? 'ok' : '');
+  }
   if (msg.state) {
-    const badge      = document.getElementById('action-badge');
-    const label      = document.getElementById('action-label');
-    const isRunning  = msg.state === 'RUNNING';
-    const isDhw      = !!msg.dhw_active;
-    const isActive   = isRunning;
-
-    let badgeClass, badgeLabel;
-    if (isDhw) {
-      badgeClass = 'dhw';
-      badgeLabel = 'Loading hot water';
-    } else if (isRunning) {
-      badgeClass = 'heating';
-      badgeLabel = 'Heating';
-    } else {
-      badgeClass = 'resting';
-      badgeLabel = 'Resting';
-    }
-    badge.className   = badgeClass;
-    label.textContent = badgeLabel;
-
     const el = document.getElementById('info-state');
     if (el) {
       el.textContent = msg.state;
-      el.className = 'chip-val ' + (isActive ? 'ok' : 'warn');
+      el.className = 'chip-val ' + (msg.badge?.active ? 'ok' : 'warn');
     }
-    document.getElementById('status-dot').className =
-      'status-dot ' + (isActive ? 'ok' : '');
   }
 
   if (msg.status)

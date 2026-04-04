@@ -289,6 +289,15 @@ WMO_DESC = {
     95:'Thunderstorm', 96:'Thunderstorm+hail', 99:'Thunderstorm+hail',
 }
 
+def _make_badge() -> dict:
+    """Badge label and CSS class for the current state. Called with state_lock held."""
+    if ebus_dhw_active:
+        return {"label": "Loading hot water", "cls": "dhw", "active": False}
+    if pump_state == "RUNNING":
+        return {"label": "Heating", "cls": "heating", "active": True}
+    return {"label": "Resting", "cls": "resting", "active": False}
+
+
 def _make_status_sentence() -> str:
     """Plain-language explanation of the current state. Called with state_lock held."""
     if current_temp is None:
@@ -526,6 +535,7 @@ def _tick():
     with state_lock:
         result = _control_tick()
         sentence = _make_status_sentence()
+        badge    = _make_badge()
         _state = pump_state
     if result:
         _broadcast(json.dumps({
@@ -537,7 +547,7 @@ def _tick():
             "state": result["state"],
             "status": last_status,
             "status_sentence": sentence,
-            "dhw_active": ebus_dhw_active,
+            "badge": badge,
         }))
 
 
@@ -783,6 +793,7 @@ def post_roomtemp():
     with state_lock:
         result = _apply_control(value)
         sentence = _make_status_sentence()
+        badge    = _make_badge()
 
     _broadcast(json.dumps({
         "type": "update",
@@ -793,7 +804,7 @@ def post_roomtemp():
         "state": result.get("state", pump_state),
         "status": last_status,
         "status_sentence": sentence,
-        "dhw_active": ebus_dhw_active,
+        "badge": badge,
     }))
 
     return jsonify({"ok": True, "ts": ts, **result})
@@ -831,9 +842,9 @@ def api_stream():
                 "status": last_status,
                 "state": pump_state,
                 "status_sentence": _make_status_sentence(),
+                "badge": _make_badge(),
                 "history": list(room_history),
                 "weather": weather_cache,
-                "dhw_active": ebus_dhw_active,
             }
         yield f"data: {json.dumps(snap)}\n\n"
         try:
