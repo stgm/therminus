@@ -425,7 +425,7 @@ def _control_tick():
 
     # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
-        if elapsed >= t_min_rest and not ebus_dhw_active:
+        if elapsed >= t_min_rest:
             # Normal trigger: room has cooled below band
             if current_temp < (SETPOINT - BAND):
                 pump_state  = "RUNNING"
