@@ -249,11 +249,11 @@ def _make_status_sentence() -> str:
 
     elif pump_state == "IDLE":
         if diff > BAND:
-            return dhw_prefix + "The room is lovely and warm. Watching and ready."
+            return dhw_prefix + "Pretty warm inside! The pump won't run until it cool down a bit."
         elif diff < -BAND:
             return dhw_prefix + "Getting a bit cool. Heating will kick in shortly."
         else:
-            return dhw_prefix + "Temperature is spot on. Watching conditions."
+            return dhw_prefix + "Temperature is spot on. Tuning where needed."
 
     elif pump_state == "RUNNING":
         if ebus_dhw_active:
