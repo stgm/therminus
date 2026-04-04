@@ -425,7 +425,7 @@ def _control_tick():
 
     # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
-        if elapsed >= t_min_rest:
+        if elapsed >= t_min_rest and not ebus_dhw_active:
             # Normal trigger: room has cooled below band
             if current_temp < (SETPOINT - BAND):
                 pump_state  = "RUNNING"
@@ -762,9 +762,25 @@ def post_roomtemp():
         return jsonify({"error": f"value {value} out of bounds [5, 35]"}), 400
 
     ts = datetime.now().isoformat(timespec="seconds")
+
+    # Update temp and snapshot state — same split-lock pattern as _tick() so
+    # we can do a blocking ebus read outside the lock before running control.
     with state_lock:
         current_temp = value
         room_history.append({"ts": ts, "value": value})
+        state_snapshot = pump_state
+        elapsed_snap   = (datetime.now() - state_since).total_seconds()
+        needs_floor_check = (state_snapshot == "RESTING"
+                             and elapsed_snap >= t_min_rest
+                             and value <= (SETPOINT + BAND))
+
+    # Ebus reads outside the lock (blocking I/O)
+    if state_snapshot == "RUNNING":
+        _refresh_ebus_reads(active_run=True)
+    elif needs_floor_check:
+        _refresh_ebus_reads(active_run=False)
+
+    with state_lock:
         result = _apply_control(value)
         sentence = _make_status_sentence()
 
