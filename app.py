@@ -361,6 +361,7 @@ def _control_tick():
 
     # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
+        ebus_valve_was_heating = False
         if elapsed >= t_min_rest:
             pump_state  = "IDLE"
             state_since = now
@@ -398,6 +399,12 @@ def _control_tick():
                               and ebus_compressor_speed == 0
                               and ebus_valve_was_heating)
         room_warm = current_temp > (SETPOINT + BAND)
+
+
+        # # While compressor is running, track whether valve was on heating circuit
+        # if active_run and ebus_compressor_speed is not None and ebus_compressor_speed > 0:
+        #     ebus_valve_was_heating = (ebus_valve == VALVE_HEATING.lower())
+
 
         if room_warm or compressor_stopped:
             if ebus_valve_was_heating:
@@ -598,16 +605,9 @@ async def _read_ebus_values():
     return result
 
 
-def _refresh_ebus_reads(active_run: bool = False):
+def _refresh_ebus_reads():
     """
     Synchronously read ebus telemetry and update the global cache.
-
-    active_run=True should be passed when called during RUNNING or WARMING.
-    In that case, if the compressor is currently spinning and the valve is on
-    the heating circuit, ebus_valve_was_heating is set to True. This sticky
-    flag persists until the next RESTING transition so that we can correctly
-    identify a compressor stop as a heating stop even if the valve has already
-    switched away from the heating circuit by the time we detect it.
 
     Called outside state_lock to avoid holding the lock during blocking I/O.
     The cached values are safe to read inside the lock on the next tick.
@@ -624,12 +624,9 @@ def _refresh_ebus_reads(active_run: bool = False):
             and ebus_compressor_speed > 0
             and ebus_valve == VALVE_DHW.lower()
         )
-        # While compressor is running, track whether valve was on heating circuit
-        if active_run and ebus_compressor_speed is not None and ebus_compressor_speed > 0:
-            ebus_valve_was_heating = (ebus_valve == VALVE_HEATING.lower())
         print(f"[therminus] ebus: flow={ebus_flow_temp}°C  comp={ebus_compressor_speed}%  "
               f"valve={ebus_valve}  outdoor={ebus_outdoor_temp}°C  "
-              f"was_heating={ebus_valve_was_heating}  dhw={ebus_dhw_active}")
+              f"dhw={ebus_dhw_active}")
     except Exception as e:
         print(f"[therminus] ebus read error: {e}")
 
