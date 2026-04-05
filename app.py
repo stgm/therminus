@@ -241,11 +241,11 @@ def _make_status_sentence() -> str:
     if pump_state == "RESTING":
         rest_remaining = max(0, t_min_rest - elapsed)
         if diff > BAND:
-            return dhw_prefix + f"Giving the floor a rest for at least {rest_remaining/60:.0f} mins."
+            return dhw_prefix + f"Giving the floor a rest, it's warm enough!"
         elif diff < -BAND:
-            return dhw_prefix + f"Although it's getting colder, resting for {rest_remaining/60:.0f} mins."
+            return dhw_prefix + f"I know it's getting colder, resting for {rest_remaining/60:.0f} mins."
         else:
-            return dhw_prefix + f"Letting the floor rest for {rest_remaining/60:.0f} more min."
+            return dhw_prefix + f"Heating done. I'll let it rest for now."
 
     elif pump_state == "IDLE":
         if diff > BAND:
@@ -262,11 +262,11 @@ def _make_status_sentence() -> str:
             else:
                 return "The hot water tank is being charged."
         if diff > BAND:
-            return "It's getting hot already! Pump will rest soon."
+            return "It's getting hot already! Will rest soon."
         elif diff < -BAND:
             return f"Heating right now! Been at it for {elapsed/60:.0f} min."
         else:
-            return (f"Still heating to make sure it's nice and cosy.")
+            return (f"Heating a little to keep it nice and cosy.")
 
 import ssl
 _ssl_ctx = ssl.create_default_context()
