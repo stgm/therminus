@@ -478,7 +478,7 @@ def _tick():
         elapsed = (datetime.now() - state_since).total_seconds()
     # Ebus reads outside the lock (blocking I/O)
     if state_snapshot in ("RUNNING", "IDLE"):
-        _refresh_ebus_reads(active_run=(state_snapshot == "RUNNING"))
+        _refresh_ebus_reads()
 
     with state_lock:
         result = _control_tick()
@@ -724,7 +724,7 @@ def post_roomtemp():
         elapsed_snap   = (datetime.now() - state_since).total_seconds()
     # Ebus reads outside the lock (blocking I/O)
     if state_snapshot in ("RUNNING", "IDLE"):
-        _refresh_ebus_reads(active_run=(state_snapshot == "RUNNING"))
+        _refresh_ebus_reads()
 
     with state_lock:
         result = _apply_control(value)
