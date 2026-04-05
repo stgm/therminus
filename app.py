@@ -139,11 +139,6 @@ ebus_flow_temp         = None    # hmu/RunDataFlowTemp (°C) — floor circuit f
 ebus_compressor_speed  = None    # hmu/RunDataCompressorSpeed (%) — 0 means idle
 ebus_valve             = None    # vwzio/ThreeWayValve — 'heating circuit' or 'warm water circuit'
 ebus_outdoor_temp      = None    # vwzio/OutdoorTemp (°C)
-# Sticky flag: True if the valve was confirmed on 'heating circuit' while the
-# compressor was running during the current RUNNING or WARMING state. We use this
-# instead of the current valve value because the valve may switch back to neutral
-# before we detect the compressor stopping, creating a race condition.
-ebus_valve_was_heating = False
 ebus_dhw_active        = False   # True when compressor on AND valve = 'warm water circuit'
 
 # ── External data cache ────────────────────────────────────────────────────────
@@ -331,13 +326,19 @@ def _control_tick():
     speed, valve, outdoor temp) are read outside the lock in _tick() before
     this function runs, so they are always fresh when evaluated here.
 
-    The function may transition state and/or write a new target to the pump.
-    It returns a dict with at minimum {target, wrote, state}, or None if
-    current_temp is not yet known.
+    Structured in two phases per tick:
+      1. Transition phase — determine whether the state should change, update
+         state variables and log. No writes to the pump happen here.
+      2. Action phase — based on the (possibly new) state, compute the target
+         setpoint, write it to the pump, update last_status, and return.
 
-    See module docstring for full state transition logic.
+    This keeps each state's write logic self-contained and prevents fall-through
+    (where a transition and the new state's first action both occur in one tick).
+
+    Returns a dict with {target, wrote, state}, or None if current_temp is
+    not yet known.
     """
-    global pump_state, state_since, t_min_rest, ebus_valve_was_heating, ebus_dhw_active, last_write_time, last_target, last_status
+    global pump_state, state_since, t_min_rest, last_write_time, last_target, last_status
 
     if current_temp is None:
         return None
@@ -346,94 +347,72 @@ def _control_tick():
     elapsed = (now - state_since).total_seconds()
     error   = SETPOINT - current_temp
 
-    # ── Spontaneous run detection ─────────────────────────────────────────────
-    # If the pump starts a heating run on its own while we're IDLE (e.g. its
-    # own schedule, or a floor-cold trigger we missed), track it so we can
-    # correctly transition to RESTING when it finishes.
-    if (pump_state == "IDLE"
-            and ebus_compressor_speed is not None
-            and ebus_compressor_speed > 0
-            and ebus_valve == VALVE_HEATING.lower()):
-        pump_state             = "RUNNING"
-        state_since            = now
-        ebus_valve_was_heating = True
-        print(f"[therminus] pump running spontaneously → RUNNING")
+    # ── Phase 1: transitions ──────────────────────────────────────────────────
+    # Evaluate all conditions and decide whether to change state.
+    # State variables (pump_state, state_since, t_min_rest, flags) are updated
+    # here. The pump is never written to in this phase.
 
-    # ── RESTING ───────────────────────────────────────────────────────────────
     if pump_state == "RESTING":
-        ebus_valve_was_heating = False
         if elapsed >= t_min_rest:
             pump_state  = "IDLE"
             state_since = now
             print(f"[therminus] → IDLE  rested={elapsed/60:.0f}min")
 
-        if pump_state == "RESTING":
-            _write_now(IDLE_TEMP, now)
-            last_status = (f"RESTING  room={current_temp:.1f}°C  rested={elapsed/60:.0f}/{t_min_rest/60:.0f}min"
-                           f"  dhw={ebus_dhw_active}")
-            return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
-
-    # ── IDLE ───────────────────────────────────────────────────────────────
-    if pump_state == "IDLE":
-        # Normal trigger: room has cooled below band
-        if current_temp < (SETPOINT - BAND):
+    elif pump_state == "IDLE":
+        # Transition to RUNNING as soon as ebus confirms the pump is heating.
+        # Therminus writes proportional targets from IDLE to encourage the pump
+        # to start; this detection confirms it actually did.
+        if (ebus_compressor_speed is not None
+                and ebus_compressor_speed > 0
+                and ebus_valve == VALVE_HEATING.lower()):
             pump_state  = "RUNNING"
             state_since = now
             print(f"[therminus] → RUNNING  room={current_temp:.1f}")
 
-
-        if pump_state == "IDLE":
-            if current_temp > (SETPOINT + BAND):
-                _write_now(IDLE_TEMP, now)
-                last_status = (f"IDLE  room={current_temp:.1f}°C  → {IDLE_TEMP}°C (warm, suppressed)  dhw={ebus_dhw_active}")
-                return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
-            else:
-                target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
-                _write_now(target, now)
-                last_status = (f"IDLE  room={current_temp:.1f}°C  → {target}°C  dhw={ebus_dhw_active}")
-                return {"target": target, "wrote": True, "state": pump_state}
-
-    # ── RUNNING ───────────────────────────────────────────────────────────────
-    if pump_state == "RUNNING":
-        compressor_stopped = (ebus_compressor_speed is not None
-                              and ebus_compressor_speed == 0
-                              and ebus_valve_was_heating)
-        room_warm = current_temp > (SETPOINT + BAND)
-
-
-        # # While compressor is running, track whether valve was on heating circuit
-        # if active_run and ebus_compressor_speed is not None and ebus_compressor_speed > 0:
-        #     ebus_valve_was_heating = (ebus_valve == VALVE_HEATING.lower())
-
-
-        if room_warm or compressor_stopped:
-            if ebus_valve_was_heating:
-                pump_state = "RESTING"
-                t_min_rest = T_MIN_REST_LONG if compressor_stopped else T_MIN_REST_SHORT
-                reason     = "compressor stopped" if compressor_stopped else "room warm"
-                print(f"[therminus] → RESTING ({reason})  room={current_temp:.1f}  rest={t_min_rest/60:.0f}min")
-                last_status = f"→ RESTING ({reason})  room={current_temp:.1f}°C"
-            else:
-                pump_state = "IDLE"
-                reason     = "compressor stopped" if compressor_stopped else "room warm"
-                print(f"[therminus] → IDLE ({reason}, no heating done)  room={current_temp:.1f}")
-                last_status = f"→ IDLE ({reason}, no heating done)  room={current_temp:.1f}°C"
+    elif pump_state == "RUNNING":
+        if (ebus_compressor_speed is not None and ebus_compressor_speed == 0):
+            pump_state  = "RESTING"
+            t_min_rest  = T_MIN_REST_LONG
             state_since = now
-            if pump_state == "RESTING":
-                _write_now(IDLE_TEMP, now)
-                return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
-            else:  # IDLE — write proportional, not suppressed
-                target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
-                _write_now(target, now)
-                return {"target": target, "wrote": True, "state": pump_state}
+            print(f"[therminus] → RESTING (compressor stopped)  room={current_temp:.1f}  rest={t_min_rest/60:.0f}min")
 
-        # Stay running — pure proportional control
-        target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
-        _write_now(target, now)
-        last_status = (f"RUNNING  room={current_temp:.1f}°C  err={error:+.2f}  "
-                       f"→ {target}°C  ran={elapsed/60:.0f}min  dhw={ebus_dhw_active}")
-        return {"target": target, "wrote": True, "state": pump_state}
+    # ── Phase 2: action ───────────────────────────────────────────────────────
+    # Compute and write the target setpoint for the current state (which may
+    # have just changed above). Each branch is fully self-contained.
 
+    if pump_state == "RESTING":
+        _write_now(IDLE_TEMP, now)
+        last_status = (f"RESTING  room={current_temp:.1f}°C  rested={elapsed/60:.0f}/{t_min_rest/60:.0f}min"
+                       f"  dhw={ebus_dhw_active}")
+        return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
+
+    if pump_state == "IDLE":
+        if current_temp > (SETPOINT + BAND):
+            # Room is above the band — suppress heating by writing a cold setpoint.
+            _write_now(IDLE_TEMP, now)
+            last_status = (f"IDLE  room={current_temp:.1f}°C  → {IDLE_TEMP}°C (warm, suppressed)"
+                           f"  dhw={ebus_dhw_active}")
+            return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
+        else:
+            target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
+            _write_now(target, now)
+            last_status = (f"IDLE  room={current_temp:.1f}°C  → {target}°C  dhw={ebus_dhw_active}")
+            return {"target": target, "wrote": True, "state": pump_state}
+
+    if pump_state == "RUNNING":
+        if current_temp > (SETPOINT + BAND):
+            # Room is warm enough — ask the pump to stop, then wait for the
+            # compressor to confirm before entering RESTING.
+            _write_now(IDLE_TEMP, now)
+            last_status = (f"RUNNING  room={current_temp:.1f}°C  warm, waiting for compressor stop"
+                           f"  ran={elapsed/60:.0f}min")
+            return {"target": IDLE_TEMP, "wrote": True, "state": pump_state}
+        else:
+            target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
+            _write_now(target, now)
+            last_status = (f"RUNNING  room={current_temp:.1f}°C  err={error:+.2f}  "
+                        f"→ {target}°C  ran={elapsed/60:.0f}min  dhw={ebus_dhw_active}")
+            return {"target": target, "wrote": True, "state": pump_state}
 
 
 def _write_now(target: float, now: datetime):
@@ -612,7 +591,7 @@ def _refresh_ebus_reads():
     Called outside state_lock to avoid holding the lock during blocking I/O.
     The cached values are safe to read inside the lock on the next tick.
     """
-    global ebus_flow_temp, ebus_compressor_speed, ebus_valve, ebus_valve_was_heating, ebus_outdoor_temp, ebus_dhw_active
+    global ebus_flow_temp, ebus_compressor_speed, ebus_valve, ebus_outdoor_temp, ebus_dhw_active
     try:
         vals = _run_async(_read_ebus_values())
         ebus_flow_temp        = vals.get("flow_temp")
