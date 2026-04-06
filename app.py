@@ -6,7 +6,6 @@ fake room-temperature setpoint (TargetTempHc) to the pump via ebusd/pyebus.
 
 See doc/ARCHITECTURE.md for an overview.
 """
-import asyncio
 import threading
 import json
 import re
@@ -18,18 +17,12 @@ from collections import deque
 from pathlib import Path
 from flask import Flask, Response, render_template, jsonify, request
 from controller import HeatPumpController
+import ebus
 
 app = Flask(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-EBUSD_HOST      = "127.0.0.1"
-EBUSD_PORT      = 8888
-
-# Minimum time between writes to ebusd. Writing more often than the sensor
-# posts (every ~5 min) is fine because the background thread updates the
-# target every CONTROL_DT seconds regardless of sensor arrivals.
-UPDATE_INTERVAL = 60    # seconds
-CONTROL_DT      = 60    # seconds — how often the control loop runs
+CONTROL_DT = 60   # seconds — how often the control loop runs
 
 # Number of room-temp readings to keep in memory for the history chart.
 # At one reading per ~5 minutes, 1440 points covers roughly 5 days.
@@ -52,28 +45,13 @@ room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for
 state_events     = deque(maxlen=2000)            # list of {ts, state} — badge transitions today
 _prev_badge_cls  = None                          # last recorded badge cls for transition detection
 HISTORY_FILE     = Path("history.json")
-last_write_time  = None          # datetime of last successful ebusd write
-last_target      = None          # last TargetTempHc value written (°C)
-sse_clients      = []            # list of queue.Queue, one per connected browser
+sse_clients   = []    # list of queue.Queue, one per connected browser
 
 # ── State machine ──────────────────────────────────────────────────────────────
 controller = HeatPumpController()
 
-# ── Ebus read cache ────────────────────────────────────────────────────────────
-# These are written by _refresh_ebus_reads() (outside state_lock) and read by
-# _control_tick() (inside state_lock). Since Python's GIL makes individual
-# attribute reads/writes atomic for simple types, this is safe without locking —
-# worst case we use a value that's one tick stale.
-ebus_flow_temp         = None    # hmu/RunDataFlowTemp (°C) — floor circuit flow temp
-ebus_compressor_speed  = None    # hmu/RunDataCompressorSpeed (%) — 0 means idle
-ebus_valve             = None    # vwzio/ThreeWayValve — 'heating circuit' or 'warm water circuit'
-ebus_outdoor_temp      = None    # vwzio/OutdoorTemp (°C)
-
 # ── External data cache ────────────────────────────────────────────────────────
-weather_cache    = None   # dict: {icon, desc, fetched_at}
-
-# Shared asyncio loop
-_loop            = None
+weather_cache = None   # dict: {icon, desc, fetched_at}
 
 
 # ── External data helpers ──────────────────────────────────────────────────────
@@ -248,40 +226,18 @@ def _refresh_weather():
     _broadcast(json.dumps({'type': 'weather', 'icon': icon, 'desc': desc_str}))
     print(f'[therminus] weather refreshed: {icon} {desc_str}')
 
-def _control_tick():
+def _control_tick(telemetry: ebus.Telemetry) -> None:
     """
     App-level control step. Called every CONTROL_DT seconds (and on sensor POST).
 
-    Must be called with state_lock held. Delegates state logic to controller.tick(),
-    then writes the resulting target to the pump.
+    Must be called with state_lock held. Passes fresh telemetry to the
+    controller, then writes the resulting target to the pump via ebus.
     """
     if current_temp is None:
         return
     now = datetime.now()
-    controller.tick(now, current_temp, ebus_compressor_speed, ebus_valve)
-    _write_now(controller.target, now)
-
-
-def _write_now(target: float, now: datetime):
-    """
-    Write a TargetTempHc value to ebusd, subject to UPDATE_INTERVAL debounce.
-
-    This is the only place writes actually happen. The debounce prevents
-    flooding ebusd — at most one write per UPDATE_INTERVAL seconds. Writes
-    that fall within the interval are silently skipped; the next tick will
-    write the then-current value instead.
-
-    Must be called with state_lock held (via _control_tick).
-    """
-    global last_write_time, last_target
-    if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
-        return
-    try:
-        _run_async(_write_target(target))
-        last_write_time = now
-        last_target = target
-    except Exception as e:
-        print(f"[therminus] write error: {e}")
+    controller.tick(now, current_temp, telemetry.compressor_speed, telemetry.valve)
+    ebus.write_target(controller.target)
 
 
 def _tick():
@@ -302,11 +258,10 @@ def _tick():
     with state_lock:
         state_snapshot = controller.state
     # Ebus reads outside the lock (blocking I/O)
-    if state_snapshot in ("RUNNING", "IDLE"):
-        _refresh_ebus_reads()
+    telemetry = ebus.read_telemetry() if state_snapshot in ("RUNNING", "IDLE") else ebus.Telemetry()
 
     with state_lock:
-        _control_tick()
+        _control_tick(telemetry)
         sentence = _make_status_sentence()
         badge    = _make_badge()
         event    = _record_state_event(badge["cls"])
@@ -354,112 +309,6 @@ def _background_refresh():
         time.sleep(10)
 
 
-# ── pyebus helpers ─────────────────────────────────────────────────────────────
-# All ebus communication goes through pyebus (https://github.com/ebus/pyebus),
-# which talks to a running ebusd daemon on EBUSD_HOST:EBUSD_PORT.
-#
-# pyebus is async-only, so all calls are dispatched to the dedicated asyncio
-# loop (_loop) via asyncio.run_coroutine_threadsafe and awaited synchronously
-# with fut.result(timeout=15). This bridges the sync control thread and the
-# async pyebus API without introducing a second event loop or threading issues.
-#
-# Each call to _make_ebus() creates a fresh Ebus connection and loads message
-# definitions from ebusd. This is slightly wasteful but keeps the code simple
-# and avoids stale connection state.
-
-async def _make_ebus():
-    """Create and return a connected, msgdef-loaded Ebus instance."""
-    from pyebus import Ebus
-    ebus = Ebus(EBUSD_HOST, port=EBUSD_PORT)
-    await ebus.async_load_msgdefs()
-    return ebus
-
-
-async def _write_target(target: float):
-    """
-    Write TargetTempHc to ebusd.
-
-    TargetTempHc is the fake room-temperature setpoint that Therminus uses
-    to control the heat pump. The pump maps this to a water temperature via
-    its own heating curve (outdoor reset). By writing a value above the real
-    room temperature, we tell the pump to heat; below, to not heat.
-    """
-    ebus = await _make_ebus()
-    for msgdef in ebus.msgdefs:
-        if msgdef.name.lower() == "targettemphc":
-            await ebus.async_write(msgdef, target)
-            print(f"[therminus] wrote TargetTempHc = {target}")
-            return
-    print("[therminus] WARNING: TargetTempHc msgdef not found")
-
-
-async def _read_ebus_values():
-    """
-    Read four telemetry values from ebusd in a single session.
-
-    Returns a dict with keys: flow_temp, compressor_speed, valve, outdoor_temp.
-    Missing keys mean the msgdef was not found or the read failed.
-
-    pyebus async_read returns a Msg object; the actual value is in msg.values[0].
-    The valve is a string enum; all other values are floats.
-    """
-    ebus = await _make_ebus()
-    result = {}
-    targets = {
-        "rundataflowtemp":       "flow_temp",
-        "rundatacompressorspeed":"compressor_speed",
-        "threewayvalve":         "valve",   # vwzio/ThreeWayValve
-        "outdoortemp":           "outdoor_temp",  # vwzio/OutdoorTemp
-    }
-    for msgdef in ebus.msgdefs:
-        key = targets.get(msgdef.name.lower())
-        if key:
-            msg = await ebus.async_read(msgdef)
-            if msg is not None:
-                try:
-                    raw = msg.values[0] if hasattr(msg, 'values') else msg
-                    # valve is a string, others are numeric
-                    if key == "valve":
-                        result[key] = str(raw).strip().lower()
-                    else:
-                        result[key] = float(raw)
-                except (TypeError, ValueError, IndexError) as e:
-                    print(f"[therminus] ebus parse error for {msgdef.name}: {e}  raw={msg!r}")
-    return result
-
-
-def _refresh_ebus_reads():
-    """
-    Synchronously read ebus telemetry and update the global cache.
-
-    Called outside state_lock to avoid holding the lock during blocking I/O.
-    The cached values are safe to read inside the lock on the next tick.
-    """
-    global ebus_flow_temp, ebus_compressor_speed, ebus_valve, ebus_outdoor_temp
-    try:
-        vals = _run_async(_read_ebus_values())
-        ebus_flow_temp        = vals.get("flow_temp")
-        ebus_compressor_speed = vals.get("compressor_speed")
-        ebus_valve            = vals.get("valve")
-        ebus_outdoor_temp     = vals.get("outdoor_temp")
-        print(f"[therminus] ebus: flow={ebus_flow_temp}°C  comp={ebus_compressor_speed}%  "
-              f"valve={ebus_valve}  outdoor={ebus_outdoor_temp}°C")
-    except Exception as e:
-        print(f"[therminus] ebus read error: {e}")
-
-
-def _run_async(coro):
-    fut = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return fut.result(timeout=15)
-
-
-def _start_async_loop():
-    global _loop
-    _loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_loop)
-    _loop.run_forever()
-
-
 # ── Control logic ──────────────────────────────────────────────────────────────
 
 
@@ -495,7 +344,7 @@ def _broadcast(payload: str):
 # GET  /api/weather — JSON of latest cached weather data.
 @app.route("/")
 def index():
-    return render_template("interface.html", update_interval=UPDATE_INTERVAL)
+    return render_template("interface.html", update_interval=ebus.UPDATE_INTERVAL)
 
 
 @app.route("/roomtemp", methods=["POST"])
@@ -524,11 +373,10 @@ def post_roomtemp():
         room_history.append({"ts": ts, "value": value})
         state_snapshot = controller.state
     # Ebus reads outside the lock (blocking I/O)
-    if state_snapshot in ("RUNNING", "IDLE"):
-        _refresh_ebus_reads()
+    telemetry = ebus.read_telemetry() if state_snapshot in ("RUNNING", "IDLE") else ebus.Telemetry()
 
     with state_lock:
-        _control_tick()
+        _control_tick(telemetry)
         sentence = _make_status_sentence()
         badge    = _make_badge()
         event    = _record_state_event(badge["cls"])
@@ -559,11 +407,11 @@ def api_weather():
 def api_state():
     with state_lock:
         return jsonify({
-            "room_temp": current_temp,
-            "target": last_target,
-            "status": controller.debug_status(datetime.now()),
-            "history": list(room_history),
-            "last_write": last_write_time.isoformat() if last_write_time else None,
+            "room_temp":  current_temp,
+            "target":     ebus.last_target,
+            "status":     controller.debug_status(datetime.now()),
+            "history":    list(room_history),
+            "last_write": ebus.last_write_time.isoformat() if ebus.last_write_time else None,
         })
 
 
@@ -624,6 +472,6 @@ if __name__ == "__main__":
               f"({'immediate start eligible' if args.initial_rest == 0 else 'timer already elapsed'})")
 
     _load_history()
-    threading.Thread(target=_start_async_loop, daemon=True).start()
+    ebus.start()
     threading.Thread(target=_background_refresh, daemon=True).start()
     app.run(host="0.0.0.0", port=6790, debug=False, threaded=True)
