@@ -249,20 +249,25 @@ def _broadcast(payload: str):
 
 
 # ── Flask routes ───────────────────────────────────────────────────────────────
-# POST /roomtemp  — receives room temperature from an external sensor.
-#                   Accepts form data or JSON with a 'current' field.
-#                   Handles comma decimals and unit suffixes ("21,4 °C").
-# GET  /          — serves the single-page UI.
-# GET  /api/stream — SSE endpoint; browsers connect here and receive all updates.
-# GET  /api/state  — JSON snapshot of current state (for debugging/integration).
-# GET  /api/weather — JSON of latest cached weather data.
+
 @app.route("/")
 def index():
+    """Serve the single-page UI."""
     return render_template("interface.html", update_interval=ebus.UPDATE_INTERVAL)
 
 
 @app.route("/roomtemp", methods=["POST"])
 def post_roomtemp():
+    """
+    Receive a room temperature reading from an external sensor.
+
+    Accepts form data or JSON with a 'current' field. Tolerates comma decimal
+    separators and unit suffixes (e.g. "21,4 °C"). Triggers an immediate
+    control tick so the pump setpoint is updated without waiting for the next
+    background cycle.
+
+    Returns JSON {ok, ts, target, state} or {error} with a 4xx status.
+    """
     global current_temp
     raw = request.form.get("current") or (request.json or {}).get("current")
     if raw is None:
@@ -314,11 +319,18 @@ def post_roomtemp():
 
 @app.route("/api/weather")
 def api_weather():
+    """Return the latest cached weather data as JSON {icon, desc, fetched_at}."""
     return jsonify(weather.cache or {})
 
 
 @app.route("/api/state")
 def api_state():
+    """
+    Return a JSON snapshot of current controller state for debugging or integration.
+
+    Includes room temperature, last written target, debug status string, full
+    room temperature history, and the timestamp of the last ebusd write.
+    """
     with state_lock:
         return jsonify({
             "room_temp":  current_temp,
@@ -331,6 +343,19 @@ def api_state():
 
 @app.route("/api/stream")
 def api_stream():
+    """
+    Server-Sent Events stream. Browsers connect here and receive all real-time
+    updates for the lifetime of the page.
+
+    On connect, immediately sends a 'snapshot' event with the full current
+    state so the UI can render without waiting for the next tick. Subsequent
+    events are 'update' (control tick or sensor POST) and 'weather'.
+
+    Each client gets its own Queue (maxsize=50). Slow or disconnected clients
+    are silently dropped — they never block the control thread.
+    A keepalive comment (': ping') is sent every 25 seconds so proxies and
+    browsers don't close the connection on idle.
+    """
     import queue
     q = queue.Queue(maxsize=50)
     sse_clients.append(q)
