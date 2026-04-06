@@ -10,14 +10,13 @@ import threading
 import json
 import re
 import time
-import urllib.request
-import urllib.parse
 from datetime import datetime, timedelta
 from collections import deque
 from pathlib import Path
 from flask import Flask, Response, render_template, jsonify, request
 from controller import HeatPumpController
 import ebus
+import weather
 
 app = Flask(__name__)
 
@@ -27,13 +26,6 @@ CONTROL_DT = 60   # seconds — how often the control loop runs
 # Number of room-temp readings to keep in memory for the history chart.
 # At one reading per ~5 minutes, 1440 points covers roughly 5 days.
 HISTORY_POINTS  = 1440
-
-# ── External API config ────────────────────────────────────────────────────────
-# Coordinates for Amsterdam — used for the Open-Meteo weather fetch.
-# Open-Meteo is free and requires no API key.
-LATITUDE         = "52.3"
-LONGITUDE        = "4.98"
-WEATHER_INTERVAL = 30 * 60      # seconds between weather refreshes
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 # All variables below are accessed from multiple threads (Flask request handlers,
@@ -49,32 +41,6 @@ sse_clients   = []    # list of queue.Queue, one per connected browser
 
 # ── State machine ──────────────────────────────────────────────────────────────
 controller = HeatPumpController()
-
-# ── External data cache ────────────────────────────────────────────────────────
-weather_cache = None   # dict: {icon, desc, fetched_at}
-
-
-# ── External data helpers ──────────────────────────────────────────────────────
-
-WMO_ICONS = {
-    0:'☀️',  1:'🌤️', 2:'⛅',  3:'☁️',
-    45:'🌫️', 48:'🌫️',
-    51:'🌦️', 53:'🌦️', 55:'🌧️',
-    61:'🌧️', 63:'🌧️', 65:'🌧️',
-    71:'🌨️', 73:'🌨️', 75:'❄️',
-    80:'🌦️', 81:'🌧️', 82:'⛈️',
-    95:'⛈️', 96:'⛈️', 99:'⛈️',
-}
-WMO_ICONS_NIGHT = {0:'🌕', 1:'🌔', 2:'🌑', 3:'☁️'}
-WMO_DESC = {
-    0:'Clear',        1:'Mainly clear',   2:'Partly cloudy',  3:'Overcast',
-    45:'Fog',         48:'Icy fog',
-    51:'Light drizzle', 53:'Drizzle',     55:'Heavy drizzle',
-    61:'Light rain',  63:'Rain',          65:'Heavy rain',
-    71:'Light snow',  73:'Snow',          75:'Heavy snow',
-    80:'Showers',     81:'Heavy showers', 82:'Violent showers',
-    95:'Thunderstorm', 96:'Thunderstorm+hail', 99:'Thunderstorm+hail',
-}
 
 
 def _make_badge() -> dict:
@@ -171,60 +137,6 @@ def _make_status_sentence() -> str:
         else:
             return "Heating a little to keep it nice and cosy."
 
-import ssl
-_ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode = ssl.CERT_NONE
-
-def _fetch_url(url: str, headers: dict | None = None) -> dict | None:
-    try:
-        req = urllib.request.Request(url, headers=headers or {})
-        with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as resp:
-            raw = resp.read()
-        # Decompress if gzip (magic bytes 1f 8b) regardless of Content-Encoding header
-        if raw[:2] == b'\x1f\x8b':
-            import gzip
-            raw = gzip.decompress(raw)
-        return json.loads(raw.decode())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors='replace')
-        print(f'[therminus] HTTP {e.code} from {url}: {body[:500]}')
-        return None
-    except Exception as e:
-        print(f'[therminus] fetch error {url}: {e}')
-        return None
-
-def _refresh_weather():
-    """
-    Fetch current weather from Open-Meteo and push to all SSE clients.
-
-    Uses the is_day field to select night-appropriate icons for clear/partly-
-    cloudy conditions (moon phases instead of sun). Only called from the
-    background thread; never blocks Flask request handling.
-    """
-    params = urllib.parse.urlencode({
-        'latitude': LATITUDE, 'longitude': LONGITUDE,
-        'current': 'weather_code,temperature_2m,is_day',
-        'timezone': 'Europe/Amsterdam',
-    })
-    d = _fetch_url(f'https://api.open-meteo.com/v1/forecast?{params}')
-    if not d:
-        return
-    cur  = d.get('current', {})
-    code = cur.get('weather_code', 0)
-    is_day = cur.get('is_day', 1) == 1
-    if not is_day and code <= 3:
-        icon = WMO_ICONS_NIGHT.get(code, '🌙')
-    else:
-        icon = WMO_ICONS.get(code, '🌡️')
-    desc = WMO_DESC.get(code, 'Unknown')
-    outside_temp = cur.get('temperature_2m')
-    # removed for now {desc} ·
-    desc_str = f"{outside_temp:.1f}°" if outside_temp is not None else desc
-    global weather_cache
-    weather_cache = {'icon': icon, 'desc': desc_str, 'fetched_at': time.time()}
-    _broadcast(json.dumps({'type': 'weather', 'icon': icon, 'desc': desc_str}))
-    print(f'[therminus] weather refreshed: {icon} {desc_str}')
 
 def _control_tick(telemetry: ebus.Telemetry) -> None:
     """
@@ -300,8 +212,10 @@ def _background_refresh():
     last_integral = 0.0
     while True:
         now = time.time()
-        if now - last_weather >= WEATHER_INTERVAL:
-            _refresh_weather()
+        if now - last_weather >= weather.INTERVAL:
+            weather.fetch(on_update=lambda icon, desc: _broadcast(
+                json.dumps({'type': 'weather', 'icon': icon, 'desc': desc})
+            ))
             last_weather = now
         if now - last_integral >= CONTROL_DT:
             _tick()
@@ -400,7 +314,7 @@ def post_roomtemp():
 
 @app.route("/api/weather")
 def api_weather():
-    return jsonify(weather_cache or {})
+    return jsonify(weather.cache or {})
 
 
 @app.route("/api/state")
@@ -433,7 +347,7 @@ def api_stream():
                 "badge": _make_badge(),
                 "history": list(room_history),
                 "state_events": list(state_events),
-                "weather": weather_cache,
+                "weather": weather.cache,
             }
         yield f"data: {json.dumps(snap)}\n\n"
         try:
