@@ -168,7 +168,7 @@ def _make_status_sentence() -> str:
         if diff > band:
             return dhw_prefix + "Giving the floor a rest, it's warm enough!"
         elif diff < -band:
-            return dhw_prefix + f"I know it's getting colder, resting for {rest_remaining/60:.0f} mins."
+            return dhw_prefix + f"I know it's getting colder, but resting for {rest_remaining/60:.0f} mins."
         else:
             return dhw_prefix + "Heating done. I'll let it rest for now."
 
@@ -187,7 +187,7 @@ def _make_status_sentence() -> str:
             else:
                 return "The hot water tank is being charged."
         if diff > band:
-            return "It's getting hot already! Will rest soon."
+            return "Heating the floor a little."
         elif diff < -band:
             return f"Heating right now! Been at it for {elapsed/60:.0f} min."
         else:
