@@ -118,32 +118,39 @@ class HeatPumpController:
                 self.state       = "RESTING"
                 self.t_min_rest  = T_MIN_REST
                 self.state_since = now
+                self.desired_min_flow_temp = MIN_FLOW_TEMP  # undo any raised minimum
                 print(f"[controller] → RESTING (compressor stopped)"
                       f"  room={current_temp:.1f}  rest={self.t_min_rest/60:.0f}min")
 
-        # ── Phase 2: compute target ───────────────────────────────────────────
+        # ── Phase 2: compute room target───────────────────────────────────────
 
         if self.state == "RESTING":
+            # keep artificially low temperature setting when resting after heating
             self.target = IDLE_TEMP
 
         elif self.state == "IDLE":
             if current_temp > (SETPOINT + BAND):
+                # keep artificially low temperature when it's fairly hot inside
                 self.target = IDLE_TEMP
             else:
+                # core algo: mirror target from room temp
                 self.target = round(
                     max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
 
         elif self.state == "RUNNING":
             if current_temp > (SETPOINT + BAND):
-                # Room warm — ask pump to stop; stay RUNNING until compressor off.
+                # if room temp gets too high we set artificially low target
                 self.target = IDLE_TEMP
             else:
+                # core algo: mirror target from room temp
                 self.target = round(
                     max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
+        # strategy: keep raising the minimum flow temp while doing the heating run
 
-        self.desired_min_flow_temp = None
+        if self.state != "RESTING":
+            self.desired_min_flow_temp = None
 
         if self.state == "RUNNING" and None not in (
                 telemetry.compressor_speed, telemetry.flow_temp, telemetry.target_flow_temp,
