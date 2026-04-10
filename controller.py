@@ -47,6 +47,13 @@ T_MIN_REST   = 60 * 60   # seconds (60 min)
 # compressor for space heating.
 IDLE_TEMP    = 15.0   # °C
 
+# Run extender: keeps the pump running by nudging MinFlowTemp upward when the
+# compressor is at minimum modulation but the flow temperature still overshoots
+# the target.  Resets to MIN_FLOW_TEMP when no longer needed.
+MIN_FLOW_TEMP        = 15.0   # °C — pump's configured baseline minimum flow temperature
+COMPRESSOR_MIN_SPEED = 30.0   # % — minimum modulation speed (pump cannot go lower)
+COMPRESSOR_MIN_TOL   =  1.0   # % — tolerance band around minimum modulation
+
 # Three-way valve position strings as reported by ebusd.
 VALVE_HEATING = 'heating circuit'
 VALVE_DHW     = 'warm water circuit'
@@ -62,28 +69,30 @@ class HeatPumpController:
         self.t_min_rest  = T_MIN_REST
         self.target      = IDLE_TEMP
         self.dhw_active  = False
+        self.desired_min_flow_temp: float | None = None  # None = no write needed
 
         # Last known sensor values — used by debug_status()
         self._current_temp     = None
         self._compressor_speed = None
 
-    def tick(self, now: datetime, current_temp: float,
-             compressor_speed, valve) -> None:
+    def tick(self, now: datetime, current_temp: float, telemetry) -> None:
         """
         Advance the state machine one step.
 
         Reads current conditions; may transition state; always updates
         self.target with the setpoint the pump should receive this tick.
+        Sets self.desired_min_flow_temp when the run extender wants to write
+        MinFlowTemp (None means no write needed).
         Returns nothing — callers read attributes directly.
         """
         if current_temp is None:
             return
 
         self._current_temp     = current_temp
-        self._compressor_speed = compressor_speed
-        self.dhw_active = (compressor_speed is not None
-                           and compressor_speed > 0
-                           and valve == VALVE_DHW)
+        self._compressor_speed = telemetry.compressor_speed
+        self.dhw_active = (telemetry.compressor_speed is not None
+                           and telemetry.compressor_speed > 0
+                           and telemetry.valve == VALVE_DHW)
 
         elapsed = (now - self.state_since).total_seconds()
         error   = SETPOINT - current_temp
@@ -97,15 +106,15 @@ class HeatPumpController:
                 print(f"[controller] → IDLE  rested={elapsed/60:.0f}min")
 
         elif self.state == "IDLE":
-            if (compressor_speed is not None
-                    and compressor_speed > 0
-                    and valve == VALVE_HEATING):
+            if (telemetry.compressor_speed is not None
+                    and telemetry.compressor_speed > 0
+                    and telemetry.valve == VALVE_HEATING):
                 self.state       = "RUNNING"
                 self.state_since = now
                 print(f"[controller] → RUNNING  room={current_temp:.1f}")
 
         elif self.state == "RUNNING":
-            if compressor_speed is not None and compressor_speed == 0:
+            if telemetry.compressor_speed is not None and telemetry.compressor_speed == 0:
                 self.state       = "RESTING"
                 self.t_min_rest  = T_MIN_REST
                 self.state_since = now
@@ -132,6 +141,38 @@ class HeatPumpController:
                 self.target = round(
                     max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
 
+        # ── Phase 3: run extender ─────────────────────────────────────────────
+
+        self.desired_min_flow_temp = None
+
+        if self.state == "RUNNING" and None not in (
+                telemetry.compressor_speed, telemetry.flow_temp, telemetry.target_flow_temp,
+                telemetry.min_flow_temp, telemetry.max_flow_temp):
+            at_min = abs(telemetry.compressor_speed - COMPRESSOR_MIN_SPEED) <= COMPRESSOR_MIN_TOL
+
+            if telemetry.min_flow_temp < MIN_FLOW_TEMP:
+                # Pump minimum dropped below our baseline — restore it.
+                self.desired_min_flow_temp = MIN_FLOW_TEMP
+                print(f"[controller] run-extender: reset (min below baseline)"
+                      f"  min={telemetry.min_flow_temp}")
+
+            elif (telemetry.target_flow_temp < telemetry.min_flow_temp
+                  and telemetry.min_flow_temp > MIN_FLOW_TEMP):
+                # We raised the minimum, but heat is no longer requested above it.
+                self.desired_min_flow_temp = MIN_FLOW_TEMP
+                print(f"[controller] run-extender: reset (no longer needed)"
+                      f"  target={telemetry.target_flow_temp}  min={telemetry.min_flow_temp}")
+
+            elif (telemetry.flow_temp > telemetry.target_flow_temp
+                  and at_min
+                  and telemetry.flow_temp < telemetry.max_flow_temp
+                  and telemetry.target_flow_temp >= MIN_FLOW_TEMP):
+                # Flow overshoots target at minimum modulation — extend the run.
+                self.desired_min_flow_temp = telemetry.flow_temp
+                print(f"[controller] run-extender: extend"
+                      f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
+                      f"  comp={telemetry.compressor_speed}%")
+
     def debug_status(self, now: datetime) -> str:
         """Internal debug status string. Not for display — use for logging/back panel."""
         if self._current_temp is None:
@@ -148,9 +189,12 @@ class HeatPumpController:
             return (f"IDLE  room={t:.1f}°C"
                     f"  → {self.target}°C  dhw={dhw}")
         if self.state == "RUNNING":
+            ext = (f"  min↑{self.desired_min_flow_temp:.1f}°C"
+                   if self.desired_min_flow_temp and self.desired_min_flow_temp > MIN_FLOW_TEMP
+                   else "")
             if t > (SETPOINT + BAND):
                 return (f"RUNNING  room={t:.1f}°C"
-                        f"  warm, waiting for compressor stop  ran={elapsed/60:.0f}min")
+                        f"  warm, waiting for compressor stop  ran={elapsed/60:.0f}min{ext}")
             return (f"RUNNING  room={t:.1f}°C  err={error:+.2f}"
-                    f"  → {self.target}°C  ran={elapsed/60:.0f}min  dhw={dhw}")
+                    f"  → {self.target}°C  ran={elapsed/60:.0f}min  dhw={dhw}{ext}")
         return ""

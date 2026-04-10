@@ -42,10 +42,13 @@ class Telemetry:
     and a 'type' key for parsing. This is the single source of truth for the
     read mapping — add a field here and it is automatically read from ebusd.
     """
-    flow_temp:        float | None = field(default=None, metadata={"msgdef": "rundataflowtemp",        "type": float})
+    target_flow_temp: float | None = field(default=None, metadata={"msgdef": "targetflowtemp",         "type": float})
+    flow_temp:        float | None = field(default=None, metadata={"msgdef": "flowtemp",               "type": float})
+    min_flow_temp:    float | None = field(default=None, metadata={"msgdef": "minflowtemp",            "type": float})
+    max_flow_temp:    float | None = field(default=None, metadata={"msgdef": "maxflowtemp",            "type": float})
     compressor_speed: float | None = field(default=None, metadata={"msgdef": "rundatacompressorspeed", "type": float})
-    valve:            str   | None = field(default=None, metadata={"msgdef": "threewayvalve",           "type": str})
-    outdoor_temp:     float | None = field(default=None, metadata={"msgdef": "outdoortemp",             "type": float})
+    valve:            str   | None = field(default=None, metadata={"msgdef": "threewayvalve",          "type": str})
+    outdoor_temp:     float | None = field(default=None, metadata={"msgdef": "outdoortemp",            "type": float})
 
     @classmethod
     def msgdef_lookup(cls) -> dict[str, tuple[str, type]]:
@@ -75,6 +78,23 @@ def read_telemetry() -> Telemetry:
     except Exception as e:
         print(f"[ebus] read error: {e}")
         return Telemetry()
+
+
+def write_min_flow_temp(temp: float) -> bool:
+    """
+    Write MinFlowTemp to ebusd.
+
+    Used by the run extender to nudge the pump's minimum flow temperature
+    upward (to extend a run) or reset it to the configured baseline.
+    Returns True if written, False on error.
+    """
+    try:
+        _run_async(_async_write_min_flow_temp(temp))
+        print(f"[ebus] wrote MinFlowTemp = {temp}")
+        return True
+    except Exception as e:
+        print(f"[ebus] write_min_flow_temp error: {e}")
+        return False
 
 
 def write_target(target: float) -> bool:
@@ -118,6 +138,16 @@ async def _make_ebus():
     ebus = Ebus(EBUSD_HOST, port=EBUSD_PORT)
     await ebus.async_load_msgdefs()
     return ebus
+
+
+async def _async_write_min_flow_temp(temp: float) -> None:
+    """Write MinFlowTemp to ebusd."""
+    ebus = await _make_ebus()
+    for msgdef in ebus.msgdefs:
+        if msgdef.name.lower() == "minflowtemp":
+            await ebus.async_write(msgdef, temp)
+            return
+    print("[ebus] WARNING: minflowtemp msgdef not found")
 
 
 async def _async_write_target(target: float) -> None:

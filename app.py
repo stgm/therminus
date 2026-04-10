@@ -148,8 +148,10 @@ def _control_tick(telemetry: ebus.Telemetry) -> None:
     if current_temp is None:
         return
     now = datetime.now()
-    controller.tick(now, current_temp, telemetry.compressor_speed, telemetry.valve)
+    controller.tick(now, current_temp, telemetry)
     ebus.write_target(controller.target)
+    if controller.desired_min_flow_temp is not None:
+        ebus.write_min_flow_temp(controller.desired_min_flow_temp)
 
 
 def _tick():
