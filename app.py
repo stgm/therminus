@@ -262,30 +262,6 @@ def post_roomtemp():
     return jsonify({"ok": True, "ts": ts})
 
 
-# @app.route("/api/weather")
-# def api_weather():
-#     """Return the latest cached weather data as JSON {icon, desc, fetched_at}."""
-#     return jsonify(weather.cache or {})
-
-
-# @app.route("/api/state")
-# def api_state():
-#     """
-#     Return a JSON snapshot of current controller state for debugging or integration.
-
-#     Includes room temperature, last written target, debug status string, full
-#     room temperature history, and the timestamp of the last ebusd write.
-#     """
-#     with state_lock:
-#         return jsonify({
-#             "room_temp":  current_temp,
-#             "target":     ebus.last_target,
-#             "status":     controller.debug_status(datetime.now()),
-#             "history":    list(room_history),
-#             "last_write": ebus.last_write_time.isoformat() if ebus.last_write_time else None,
-#         })
-
-
 @app.route("/api/stream")
 def api_stream():
     """
