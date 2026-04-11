@@ -138,36 +138,12 @@ def _make_status_sentence() -> str:
             return "Heating a little to keep it nice and cosy."
 
 
-def _control_tick(telemetry: ebus.Telemetry) -> None:
-    """
-    App-level control step. Called every CONTROL_DT seconds (and on sensor POST).
-
-    Must be called with state_lock held. Passes fresh telemetry to the
-    controller, then writes the resulting target to the pump via ebus.
-    """
-    if current_temp is None:
-        return
-    now = datetime.now()
-    controller.tick(now, current_temp, telemetry)
-    ebus.write_target(controller.target)
-    if controller.desired_min_flow_temp is not None:
-        ebus.write_min_flow_temp(controller.desired_min_flow_temp)
-
-
 def _tick():
     """
     One control cycle. Called every CONTROL_DT seconds by _background_refresh.
 
-    Deliberately structured to do ebus I/O *outside* state_lock and control
-    logic *inside* it, because pyebus calls are blocking (routed through the
-    asyncio loop via run_coroutine_threadsafe) and we don't want to hold the
-    lock during network/bus I/O.
-
-    Sequence:
-      1. Snapshot state (under lock) to decide whether ebus reads are needed.
-      2. Perform ebus reads if needed (outside lock).
-      3. Run _control_tick (under lock) — state machine + ebus write.
-      4. Broadcast updated state to all SSE clients (outside lock).
+    Ebus I/O happens outside state_lock (blocking calls routed through the
+    asyncio loop); control logic and state updates happen inside it.
     """
     with state_lock:
         state_snapshot = controller.state
@@ -175,7 +151,8 @@ def _tick():
     telemetry = ebus.read_telemetry() if state_snapshot in ("RUNNING", "IDLE") else ebus.Telemetry()
 
     with state_lock:
-        _control_tick(telemetry)
+        if current_temp is not None:
+            ebus.write(controller.tick(datetime.now(), current_temp, telemetry))
         sentence = _make_status_sentence()
         badge    = _make_badge()
         event    = _record_state_event(badge["cls"])
@@ -199,19 +176,12 @@ def _background_refresh():
     """
     Long-running background thread. Runs for the lifetime of the process.
 
-    Responsibilities:
-      - Refresh weather from Open-Meteo every WEATHER_INTERVAL seconds.
-      - Run one control tick every CONTROL_DT seconds.
-
-    Sleeps 10 seconds between wakeups so that CONTROL_DT ticks land within
-    ±10s of their scheduled time without busy-waiting.
-
-    Note: the docstring mentions 'PI integral' in the original code — this
-    was removed. The background thread now only drives the bang-bang control
-    loop and weather refresh.
+    Refreshes weather every WEATHER_INTERVAL seconds and runs one control
+    tick every CONTROL_DT seconds. Sleeps 10 seconds between wakeups so
+    ticks land within ±10s of their scheduled time without busy-waiting.
     """
     last_weather  = 0.0
-    last_integral = 0.0
+    last_tick     = 0.0
     while True:
         now = time.time()
         if now - last_weather >= weather.INTERVAL:
@@ -219,9 +189,9 @@ def _background_refresh():
                 json.dumps({'type': 'weather', 'icon': icon, 'desc': desc})
             ))
             last_weather = now
-        if now - last_integral >= CONTROL_DT:
+        if now - last_tick >= CONTROL_DT:
             _tick()
-            last_integral = now
+            last_tick = now
         time.sleep(10)
 
 
@@ -255,7 +225,7 @@ def _broadcast(payload: str):
 @app.route("/")
 def index():
     """Serve the single-page UI."""
-    return render_template("interface.html", update_interval=ebus.UPDATE_INTERVAL)
+    return render_template("interface.html", update_interval=CONTROL_DT)
 
 
 @app.route("/roomtemp", methods=["POST"])
@@ -264,11 +234,10 @@ def post_roomtemp():
     Receive a room temperature reading from an external sensor.
 
     Accepts form data or JSON with a 'current' field. Tolerates comma decimal
-    separators and unit suffixes (e.g. "21,4 °C"). Triggers an immediate
-    control tick so the pump setpoint is updated without waiting for the next
-    background cycle.
+    separators and unit suffixes (e.g. "21,4 °C"). Frontend receives it
+    on the next background cycle (within CONTROL_DT seconds).
 
-    Returns JSON {ok, ts, target, state} or {error} with a 4xx status.
+    Returns JSON {ok, ts} or {error} with a 4xx status.
     """
     global current_temp
     raw = request.form.get("current") or (request.json or {}).get("current")
@@ -286,61 +255,35 @@ def post_roomtemp():
         return jsonify({"error": f"value {value} out of bounds [5, 35]"}), 400
 
     ts = datetime.now().isoformat(timespec="seconds")
-
-    # Update temp and snapshot state — same split-lock pattern as _tick() so
-    # we can do a blocking ebus read outside the lock before running control.
     with state_lock:
         current_temp = value
         room_history.append({"ts": ts, "value": value})
-        state_snapshot = controller.state
-    # Ebus reads outside the lock (blocking I/O)
-    telemetry = ebus.read_telemetry() if state_snapshot in ("RUNNING", "IDLE") else ebus.Telemetry()
 
-    with state_lock:
-        _control_tick(telemetry)
-        sentence = _make_status_sentence()
-        badge    = _make_badge()
-        event    = _record_state_event(badge["cls"])
-
-    _save_history()
-
-    _broadcast(json.dumps({
-        "type": "update",
-        "ts": ts,
-        "room_temp": value,
-        "target": controller.target,
-        "state": controller.state,
-        "status": controller.debug_status(datetime.now()),
-        "status_sentence": sentence,
-        "badge": badge,
-        "state_event": event,
-    }))
-
-    return jsonify({"ok": True, "ts": ts, "target": controller.target, "state": controller.state})
+    return jsonify({"ok": True, "ts": ts})
 
 
-@app.route("/api/weather")
-def api_weather():
-    """Return the latest cached weather data as JSON {icon, desc, fetched_at}."""
-    return jsonify(weather.cache or {})
+# @app.route("/api/weather")
+# def api_weather():
+#     """Return the latest cached weather data as JSON {icon, desc, fetched_at}."""
+#     return jsonify(weather.cache or {})
 
 
-@app.route("/api/state")
-def api_state():
-    """
-    Return a JSON snapshot of current controller state for debugging or integration.
+# @app.route("/api/state")
+# def api_state():
+#     """
+#     Return a JSON snapshot of current controller state for debugging or integration.
 
-    Includes room temperature, last written target, debug status string, full
-    room temperature history, and the timestamp of the last ebusd write.
-    """
-    with state_lock:
-        return jsonify({
-            "room_temp":  current_temp,
-            "target":     ebus.last_target,
-            "status":     controller.debug_status(datetime.now()),
-            "history":    list(room_history),
-            "last_write": ebus.last_write_time.isoformat() if ebus.last_write_time else None,
-        })
+#     Includes room temperature, last written target, debug status string, full
+#     room temperature history, and the timestamp of the last ebusd write.
+#     """
+#     with state_lock:
+#         return jsonify({
+#             "room_temp":  current_temp,
+#             "target":     ebus.last_target,
+#             "status":     controller.debug_status(datetime.now()),
+#             "history":    list(room_history),
+#             "last_write": ebus.last_write_time.isoformat() if ebus.last_write_time else None,
+#         })
 
 
 @app.route("/api/stream")

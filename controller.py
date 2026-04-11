@@ -75,7 +75,7 @@ class HeatPumpController:
         self._current_temp     = None
         self._compressor_speed = None
 
-    def tick(self, now: datetime, current_temp: float, telemetry) -> None:
+    def tick(self, now: datetime, current_temp: float, telemetry) -> dict:
         """
         Advance the state machine one step.
 
@@ -83,10 +83,10 @@ class HeatPumpController:
         self.target with the setpoint the pump should receive this tick.
         Sets self.desired_min_flow_temp when the run extender wants to write
         MinFlowTemp (None means no write needed).
-        Returns nothing — callers read attributes directly.
+        Returns {"room_target": float, "min_flow_temp": float | None}.
         """
         if current_temp is None:
-            return
+            return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
 
         self._current_temp     = current_temp
         self._compressor_speed = telemetry.compressor_speed
@@ -149,7 +149,7 @@ class HeatPumpController:
         # make sure extender stops when room temp reached
         if current_temp > SETPOINT + 0.1:
             self.desired_min_flow_temp = MIN_FLOW_TEMP
-            return
+            return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
         # strategy: keep raising the minimum flow temp while doing the heating run
@@ -185,6 +185,8 @@ class HeatPumpController:
                 print(f"[controller] run-extender: extend"
                       f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
                       f"  comp={telemetry.compressor_speed}%")
+
+        return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
 
     def debug_status(self, now: datetime) -> str:
         """Internal debug status string. Not for display — use for logging/back panel."""

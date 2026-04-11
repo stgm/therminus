@@ -1,16 +1,16 @@
 """
 ebus — ebusd communication layer for Therminus.
 
-All pyebus I/O lives here. The rest of the app calls the three public
-functions and reads the two public attributes; it never touches pyebus directly.
+All pyebus I/O lives here. The rest of the app calls the public functions
+and reads the public attributes; it never touches pyebus directly.
 
 Public functions:
     start()                   launch the asyncio loop thread (call once at startup)
     read_telemetry()          blocking read of pump telemetry; returns Telemetry
-    write_target(target)      debounced write of TargetTempHc; returns True if written
+    write(setpoints)          write pump setpoints from a dict; None values are skipped
 
 Public attributes:
-    last_target               last value successfully written (°C), or None
+    last_target               last room_target value successfully written (°C), or None
     last_write_time           datetime of last successful write, or None
 """
 
@@ -22,10 +22,6 @@ from datetime import datetime
 # ── Configuration ──────────────────────────────────────────────────────────────
 EBUSD_HOST      = "127.0.0.1"
 EBUSD_PORT      = 8888
-
-# Minimum seconds between writes to ebusd. Prevents flooding the bus —
-# the pump's sensor posts every ~5 min, but our control loop runs every 60s.
-UPDATE_INTERVAL = 60   # seconds
 
 # ── Module state ───────────────────────────────────────────────────────────────
 _loop           = None
@@ -80,42 +76,18 @@ def read_telemetry() -> Telemetry:
         return Telemetry()
 
 
-def write_min_flow_temp(temp: float) -> bool:
-    """
-    Write MinFlowTemp to ebusd.
-
-    Used by the run extender to nudge the pump's minimum flow temperature
-    upward (to extend a run) or reset it to the configured baseline.
-    Returns True if written, False on error.
-    """
-    try:
-        _run_async(_async_write_min_flow_temp(temp))
-        print(f"[ebus] wrote MinFlowTemp = {temp}")
-        return True
-    except Exception as e:
-        print(f"[ebus] write_min_flow_temp error: {e}")
-        return False
-
-
-def write_target(target: float) -> bool:
-    """
-    Write TargetTempHc to ebusd, subject to UPDATE_INTERVAL debounce.
-
-    Returns True if a write was performed, False if skipped due to debounce.
-    This is the only place writes happen — callers should not write directly.
-    """
+def write(setpoints: dict) -> None:
+    """Write pump setpoints from a dict. Keys with None values are skipped."""
     global last_target, last_write_time
-    now = datetime.now()
-    if last_write_time and (now - last_write_time).total_seconds() < UPDATE_INTERVAL:
-        return False
     try:
-        _run_async(_async_write_target(target))
-        last_target     = target
-        last_write_time = now
-        return True
+        if (v := setpoints.get("room_target")) is not None:
+            _run_async(_async_write("TargetTempHc", v))
+            last_target     = v
+            last_write_time = datetime.now()
+        if (v := setpoints.get("min_flow_temp")) is not None:
+            _run_async(_async_write("MinFlowTemp", v))
     except Exception as e:
         print(f"[ebus] write error: {e}")
-        return False
 
 
 # ── Internals ──────────────────────────────────────────────────────────────────
@@ -140,31 +112,16 @@ async def _make_ebus():
     return ebus
 
 
-async def _async_write_min_flow_temp(temp: float) -> None:
-    """Write MinFlowTemp to ebusd."""
+async def _async_write(msgdef_name: str, value: float) -> None:
+    """Write a single value to ebusd by msgdef name."""
     ebus = await _make_ebus()
+    name = msgdef_name.lower()
     for msgdef in ebus.msgdefs:
-        if msgdef.name.lower() == "minflowtemp":
-            await ebus.async_write(msgdef, temp)
+        if msgdef.name.lower() == name:
+            await ebus.async_write(msgdef, value)
+            print(f"[ebus] wrote {msgdef_name} = {value}")
             return
-    print("[ebus] WARNING: minflowtemp msgdef not found")
-
-
-async def _async_write_target(target: float) -> None:
-    """
-    Write TargetTempHc to ebusd.
-
-    TargetTempHc is the fake room-temperature setpoint Therminus uses to
-    control the heat pump. The pump maps it to a water temperature via its
-    own outdoor-reset heating curve.
-    """
-    ebus = await _make_ebus()
-    for msgdef in ebus.msgdefs:
-        if msgdef.name.lower() == "targettemphc":
-            await ebus.async_write(msgdef, target)
-            print(f"[ebus] wrote TargetTempHc = {target}")
-            return
-    print("[ebus] WARNING: TargetTempHc msgdef not found")
+    print(f"[ebus] WARNING: {msgdef_name} msgdef not found")
 
 
 async def _async_read_telemetry() -> Telemetry:
