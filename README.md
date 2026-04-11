@@ -8,21 +8,6 @@ plain language.
 
 ---
 
-## Table of contents
-
-1. [How it works](#how-it-works)
-2. [Requirements](#requirements)
-3. [Installation](#installation)
-4. [Configuration](#configuration)
-5. [Running](#running)
-6. [Sending room temperature](#sending-room-temperature)
-7. [The web UI](#the-web-ui)
-8. [API reference](#api-reference)
-9. [Running as a service](#running-as-a-service)
-10. [Tuning guide](#tuning-guide)
-
----
-
 ## How it works
 
 ### The core idea
@@ -263,8 +248,7 @@ uv run python app.py --initial-rest 10
 uv run python app.py --initial-rest 0
 ```
 
-Use `--initial-rest 0` only when you know the pump has been off long enough
-that immediate re-engagement is safe.
+Use `--initial-rest 0` only when it's OK that the app starts your pump immediately (if needed).
 
 ---
 
@@ -330,115 +314,9 @@ Add to Home Screen).
 
 ---
 
-## API reference
-
-All endpoints return JSON unless noted.
-
-| Method | Path           | Description                                              |
-|--------|---------------|----------------------------------------------------------|
-| `GET`  | `/`           | Serves the web UI (HTML)                                 |
-| `POST` | `/roomtemp`   | Receive room temperature. Body: `current=<value>`        |
-| `GET`  | `/api/stream` | SSE stream of real-time state updates                    |
-| `GET`  | `/api/state`  | Current state snapshot                                   |
-| `GET`  | `/api/weather`| Latest cached weather data                               |
-
-### SSE message types
-
-Messages on `/api/stream` are JSON objects with a `type` field:
-
-**`snapshot`** — sent immediately on connection, contains full current state:
-```json
-{
-  "type": "snapshot",
-  "room_temp": 20.9,
-  "target": 21.0,
-  "state": "RESTING",
-  "status": "RESTING  room=20.9°C  rested=12/60min",
-  "status_sentence": "Right where we want it. Having a rest for at least 48 more min.",
-  "history": [{"ts": "2025-01-01T08:00:00", "value": 20.8}, ...],
-  "weather": {"icon": "⛅", "desc": "Partly cloudy · 7.2°C outside"}
-}
-```
-
-**`update`** — sent on every control tick (~60s) and every sensor POST:
-```json
-{
-  "type": "update",
-  "ts": "2025-01-01T10:00:00",
-  "room_temp": 20.7,
-  "target": 21.3,
-  "state": "RUNNING",
-  "wrote": true,
-  "status": "RUNNING  room=20.7°C  err=+0.30  → 21.3°C  ran=8min",
-  "status_sentence": "Working on it. Been at it for 8 min."
-}
-```
-
-**`weather`** — sent when weather data refreshes (every 30 min):
-```json
-{
-  "type": "weather",
-  "icon": "🌧️",
-  "desc": "Rain · 5.1°C outside"
-}
-```
-
----
-
-## Running as a service
-
-### systemd (Linux)
-
-Create `/etc/systemd/system/therminus.service`:
-
-```ini
-[Unit]
-Description=Therminus heat pump controller
-After=network.target ebusd.service
-
-[Service]
-Type=simple
-User=therminus
-WorkingDirectory=/home/therminus/therminus
-ExecStart=/home/therminus/therminus/.venv/bin/python app.py
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable therminus
-sudo systemctl start therminus
-sudo systemctl status therminus
-```
-
-View logs:
-
-```bash
-journalctl -u therminus -f
-```
-
-### Updating the app
-
-When deploying a code update where the pump may have recently stopped:
-
-```bash
-sudo systemctl stop therminus
-# deploy new code
-sudo systemctl start therminus --initial-rest 0
-```
-
-Note: `--initial-rest` is passed via the `ExecStart` line when needed, or you
-can temporarily edit the service file for a one-off restart.
-
----
-
 ## Tuning guide
+
+Currently AI-generated so take with a grain of salt.
 
 ### The room is slow to reach setpoint
 
