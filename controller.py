@@ -147,9 +147,9 @@ class HeatPumpController:
                     max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
 
         # make sure extender stops when room temp reached
-        if current_temp > SETPOINT + 0.1:
-            self.desired_min_flow_temp = MIN_FLOW_TEMP
-            return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
+        # if current_temp > SETPOINT + 0.1:
+        #     self.desired_min_flow_temp = MIN_FLOW_TEMP
+        #     return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
         # strategy: keep raising the minimum flow temp while doing the heating run
@@ -162,7 +162,12 @@ class HeatPumpController:
                 telemetry.min_flow_temp, telemetry.max_flow_temp):
             compressor_running_at_min = abs(telemetry.compressor_speed - COMPRESSOR_MIN_SPEED) <= COMPRESSOR_MIN_TOL
 
-            if telemetry.min_flow_temp < MIN_FLOW_TEMP:
+            if (current_temp > SETPOINT + 0.1 and elapsed >= 3 * 60 * 60):
+                self.desired_min_flow_temp = MIN_FLOW_TEMP
+                print(f"[controller] run-extender stopped after 3 hours and room is good"
+                      f"  min={telemetry.min_flow_temp}")
+
+            elif telemetry.min_flow_temp < MIN_FLOW_TEMP:
                 # Pump minimum dropped below our baseline — restore it.
                 self.desired_min_flow_temp = MIN_FLOW_TEMP
                 print(f"[controller] run-extender: reset (min below baseline)"
