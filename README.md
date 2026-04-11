@@ -3,8 +3,8 @@
 A smart heat pump controller for homes with underfloor heating (UFH). Therminus
 runs as a small web server, receives room temperature from a sensor, and controls
 the heat pump by writing a fake room-temperature setpoint to it via the ebus
-protocol. It serves a mobile-first web UI that shows what's happening and why, in
-plain language.
+protocol. It serves a mobile-first web UI that shows what's happening in plain
+language.
 
 ---
 
@@ -14,128 +14,120 @@ plain language.
 
 Heat pumps with ebus connectivity expose a register called `TargetTempHc` — the
 room temperature setpoint for the heating circuit. Normally the pump's own
-thermostat writes to this. Therminus takes over by writing its own values, using
-the room temperature to decide what to write.
+thermostat writes this. Therminus takes over: it reads the actual room
+temperature from an external sensor and writes its own setpoint, nudging the
+pump up or down based on how far the room is from the target.
 
-This is sometimes called *room compensation* or writing a *fake setpoint*. The
-pump maps whatever setpoint it receives to a water temperature via its internal
-heating curve (outdoor reset), so Therminus never needs to think about water
-temperatures directly — it just nudges the setpoint up or down, and the pump
-handles the rest.
+This is sometimes called *room compensation* or a *fake setpoint*. The pump maps
+whatever setpoint it receives to a water temperature via its internal heating
+curve (outdoor reset), so Therminus never has to think about water temperatures
+directly — it just nudges the setpoint, and the pump handles the rest.
 
-### The two states
+### States
 
-Therminus runs a two-state machine:
+Therminus runs a bang-bang outer loop with a proportional inner loop:
 
 ```
-                   room below band
-                   + rested                    floor cold + in band
-RESTING ───────────────────────────────────────────────────────────> RUNNING
-   ^                                                                      |
-   |              room warm / compressor stops (heating confirmed)        |
-   +──────────────────────────────────────────────────────────────────────+
+                  room below band
+                  + rested                    floor cold + in band
+RESTING ──────────────────────────────────────────────────────────> RUNNING
+   ^                                                                     |
+   |             room warm / compressor stops (heating confirmed)        |
+   +─────────────────────────────────────────────────────────────────────+
 ```
 
-**RESTING** — the pump is told to idle. Therminus writes a very low fake setpoint
-(15°C), telling the pump there is no heat demand. The compressor stays off. This
-state lasts for a minimum rest period before heating is considered again.
+**RESTING** — the pump is told to idle. Therminus writes a very low fake
+setpoint (15°C), telling the pump there is no heat demand. The compressor
+stays off. This state enforces a minimum rest period before heating can start
+again, preventing short-cycling.
 
 After the rest period, two conditions can trigger a move to RUNNING:
 
-- **Room too cold** — room temperature has dropped below `setpoint − band`. The
-  normal heating case.
+- **Room too cold** — room temperature has dropped below `SETPOINT − BAND`.
+  The normal heating case.
 - **Floor too cold** — the floor circuit flow temperature has dropped below
-  `FLOOR_COMFORT_TEMP` (25°C) while the room is still within the band. The floor
-  has given up its heat during the rest and needs a top-up even though the room
-  itself hasn't cooled enough to trigger the normal threshold.
+  `FLOOR_COMFORT_TEMP` (25°C) while the room is still within the band. The
+  floor has given up its stored heat and needs a top-up even though the room
+  itself hasn't cooled enough yet.
 
-**RUNNING** — Therminus writes a proportional setpoint based on how far the room
-is from the target temperature: `setpoint + Kp * (setpoint − room_temp)`. The
-pump responds by heating the floor to whatever water temperature its heating curve
-prescribes for that demand level. RUNNING ends when either:
-- the room rises above `setpoint + band` (room is warm enough), or
-- the pump's compressor stops on its own and the three-way valve confirms it was
-  running in heating mode (not domestic hot water).
+**RUNNING** — Therminus writes a proportional setpoint:
+`SETPOINT + KP × (SETPOINT − room_temp)`. The pump responds by heating the
+floor to whatever water temperature its heating curve prescribes for that
+demand level. RUNNING ends when:
 
-### Why not a full PID controller?
+- the room rises above `SETPOINT + BAND` (room is warm enough), or
+- the pump's compressor stops while the three-way valve confirms it was on
+  the heating circuit (not domestic hot water).
 
-UFH floors have enormous thermal mass — changes in room temperature lag hours
-behind changes in water temperature. An integral term accumulates error over
-time, which sounds useful, but in practice it winds up aggressively while the
-floor is slow to respond, then overshoots. Testing showed the pump's own outdoor
-reset curve already provides the long-term correction that an integral would add,
-without the instability. Pure proportional control is simpler, easier to reason
-about, and works well here.
+### Why not a full PID?
 
-### Why bang-bang (on/off) as the outer loop?
+UFH floors have enormous thermal mass — room temperature changes lag hours
+behind water temperature changes. An integral term winds up aggressively while
+the floor is slow to respond, then overshoots badly. The pump's own outdoor
+reset curve already provides the long-term correction an integral would add,
+without the instability. Proportional-only is simpler, easier to reason about,
+and works well here.
+
+### Why bang-bang as the outer loop?
 
 Heat pumps are most efficient running long cycles at low intensity. Short
 cycling (frequent start/stop) reduces efficiency and wears the compressor. The
 bang-bang outer loop enforces minimum rest periods between runs, encouraging
-longer and fewer heating cycles. The proportional inner loop then determines how
-hard to push during a run.
+longer and fewer cycles. The proportional inner loop determines how hard to push
+during a run.
 
-### The three-way valve guard
+### ebus communication
 
-The pump's compressor also runs for domestic hot water (DHW). Therminus must
-not mistake a DHW compressor stop for the end of a heating run, or it would
-incorrectly enter a long rest period mid-day.
+Therminus talks to the pump via [ebusd](https://github.com/john30/ebusd) and
+[pyebus](https://github.com/ebus/pyebus). It reads four values from the pump
+each control tick:
 
-The fix: Therminus reads the `vwzio/ThreeWayValve` register every tick during
-active states and tracks whether the valve was on `heating circuit` while the
-compressor was running. When the compressor stops, this saved flag (not the
-current valve position, which may have already switched) tells Therminus whether
-it was a heating run or a DHW run. Only heating stops trigger a state transition.
-
-### Ebus communication
-
-Therminus talks to the pump via [ebusd](https://github.com/john30/ebusd) (an
-open-source ebus daemon) and [pyebus](https://github.com/ebus/pyebus) (a Python
-async library for ebusd). It reads four telemetry values from the pump each
-control tick:
-
-| Register                       | Value                              |
-|--------------------------------|------------------------------------|
-| `hmu/RunDataFlowTemp`          | Floor circuit flow temperature (°C)|
-| `hmu/RunDataCompressorSpeed`   | Compressor speed (%, 0 = idle)     |
-| `vwzio/ThreeWayValve`          | `heating circuit` or `warm water circuit` |
-| `vwzio/OutdoorTemp`            | Outdoor air temperature (°C)       |
+| Register                       | Value                                    |
+|--------------------------------|------------------------------------------|
+| `hmu/RunDataFlowTemp`          | Floor circuit flow temperature (°C)      |
+| `hmu/RunDataCompressorSpeed`   | Compressor speed (%, 0 = idle)           |
+| `vwzio/ThreeWayValve`          | `heating circuit` or `warm water circuit`|
+| `vwzio/OutdoorTemp`            | Outdoor air temperature (°C)             |
 
 And writes one value:
 
-| Register                       | Value                              |
-|--------------------------------|------------------------------------|
-| `hmu/TargetTempHc`             | Fake room setpoint (°C)            |
+| Register         | Value                    |
+|------------------|--------------------------|
+| `hmu/TargetTempHc` | Fake room setpoint (°C) |
 
 ### Room temperature input
 
-Therminus does not read a room temperature sensor itself. Instead, an external
-source POSTs the current reading to `/roomtemp` every few minutes. This can be
-Home Assistant, a cron job, Node-RED, or any HTTP client. The endpoint is
-intentionally simple and tolerant of different formats.
+Therminus does not read a room sensor itself. An external source POSTs the
+current reading to `/roomtemp` every few minutes — Home Assistant, a cron job,
+Node-RED, or any HTTP client. The endpoint tolerates many input formats.
 
-### The web UI
+### Web UI
 
-A mobile-first single-page app served at port 6790. The front card shows the
-room temperature, a badge (Heating / Warming the floor / Resting), and a warm
-plain-language sentence explaining what is happening and why. Weather icon and
-current outdoor conditions are shown top-right, with day/night-aware icons. A
-small info button flips the card to reveal a technical back panel with the raw
-status string, last/next write times, and a room temperature history chart.
+A mobile app at port 6790. The web app is continually updated
+by the web server. Multiple browsers can be connected simultaneously.
 
-All updates are pushed from server to browser via Server-Sent Events (SSE) — no
-polling, no page refreshes. Multiple browsers can be connected simultaneously and
-all receive the same real-time updates.
+**Front card:**
+- Day/time (top left), weather icon and outdoor temperature (top right)
+- Current room temperature (large)
+- State badge: *HEATING*, *LOADING HOT WATER*, or *RESTING*
+- A plain-language sentence explaining what is happening and why
+
+**Back panel** (tap the ⓘ button):
+- Raw status string with technical details
+- Last write time and next write countdown
+- Room temperature history chart for the current day
 
 ---
 
 ## Requirements
 
 - Python 3.11 or later
+- Probably `uv` (Python package manager)
 - [ebusd](https://github.com/john30/ebusd) running and connected to your heat pump
-- `uv` (Python package manager — see below)
-- A room temperature sensor that can make HTTP POST requests (e.g. Home Assistant,
-  a Raspberry Pi with a sensor, or any HTTP-capable device)
+- A way to POST the current room temperature to the application:
+  - Home Assistant may be able to do this
+  - Apple Home can be configured to post a temperature every 5 minutes
+  - Maybe you have a sensor that can post to a web service
 
 ---
 
@@ -177,57 +169,45 @@ cd therminus
 
 ```bash
 uv venv
-uv pip install flask pyebus
-```
-
-This creates a `.venv` directory in the project folder. You do not need to
-activate it manually — `uv run` handles that.
-
-Alternatively, if the project has a `pyproject.toml`:
-
-```bash
-uv sync
+uv pip install -r requirements.txt
 ```
 
 ### 4. Verify ebusd is running
 
-Therminus connects to ebusd on `127.0.0.1:8888` by default. Check that ebusd
-is running and accessible:
+Therminus connects to ebusd on `127.0.0.1:8888` by default:
 
 ```bash
 ebusctl info
 ```
 
 If ebusd is on a different host or port, update `EBUSD_HOST` and `EBUSD_PORT`
-at the top of `app.py`.
+at the top of `ebus.py`.
 
 ---
 
 ## Configuration
 
-All configuration is at the top of `app.py`. The most important settings:
+All configuration lives at the top of `app.py` and `controller.py`.
 
-| Setting              | Default  | Description                                          |
-|----------------------|----------|------------------------------------------------------|
-| `EBUSD_HOST`         | `127.0.0.1` | ebusd hostname or IP                              |
-| `EBUSD_PORT`         | `8888`   | ebusd port                                           |
-| `SETPOINT`           | `21.0`   | Desired room temperature (°C)                        |
-| `KP`                 | `1.0`    | Proportional gain. 1.0 = 1°C below target → 1°C nudge |
-| `BAND`               | `0.3`    | Deadband around setpoint (°C). Prevents reacting to tiny fluctuations |
-| `T_MIN_REST_SHORT`   | `1800`   | Seconds to rest after room-temp stop (30 min)        |
-| `T_MIN_REST_LONG`    | `3600`   | Seconds to rest after compressor-off stop (60 min)   |
-| `IDLE_TEMP`          | `15.0`   | Fake setpoint written while resting (°C)             |
-| `FLOOR_COMFORT_TEMP` | `25.0`   | Flow temp below which a cold-floor run is triggered (°C) |
-| `TARGET_MIN`         | `16.0`   | Minimum fake setpoint ever written (°C)              |
-| `TARGET_MAX`         | `24.0`   | Maximum fake setpoint ever written (°C)              |
-| `LATITUDE`           | `52.3` | Your latitude for weather fetch                    |
-| `LONGITUDE`          | `4.98` | Your longitude for weather fetch                   |
+| Setting              | Default     | Description                                          |
+|----------------------|-------------|------------------------------------------------------|
+| `EBUSD_HOST`         | `127.0.0.1` | ebusd hostname or IP                                 |
+| `EBUSD_PORT`         | `8888`      | ebusd port                                           |
+| `SETPOINT`           | `21.0`      | Desired room temperature (°C)                        |
+| `KP`                 | `1.0`       | Proportional gain (1°C error → 1°C nudge)            |
+| `BAND`               | `0.3`       | Deadband around setpoint (°C)                        |
+| `T_MIN_REST_SHORT`   | `1800`      | Rest after room-temp stop (30 min)                   |
+| `T_MIN_REST_LONG`    | `3600`      | Rest after compressor-off stop (60 min)              |
+| `IDLE_TEMP`          | `15.0`      | Fake setpoint written while resting (°C)             |
+| `FLOOR_COMFORT_TEMP` | `25.0`      | Flow temp below which a cold-floor run is triggered  |
+| `TARGET_MIN`         | `16.0`      | Minimum fake setpoint ever written (°C)              |
+| `TARGET_MAX`         | `24.0`      | Maximum fake setpoint ever written (°C)              |
+| `LATITUDE`           | `52.3`  | Your latitude for weather                            |
+| `LONGITUDE`          | `4.98`   | Your longitude for weather                           |
 
 ---
 
 ## Running
-
-### Development
 
 ```bash
 uv run python app.py
@@ -235,13 +215,13 @@ uv run python app.py
 
 The app starts on `http://0.0.0.0:6790`.
 
-### With initial rest override
+### Initial rest override
 
-When restarting the app after a short downtime (e.g. a code update), you may
-not want to wait the full 60-minute default rest before the pump can start:
+After a short restart you may not want to wait the full rest period before the
+pump can start again:
 
 ```bash
-# Start with 10-minute rest instead of 60
+# Start with a 10-minute rest instead of 60
 uv run python app.py --initial-rest 10
 
 # Start with no rest (pump can start immediately on next tick)
@@ -254,8 +234,8 @@ Use `--initial-rest 0` only when it's OK that the app starts your pump immediate
 
 ## Sending room temperature
 
-POST the current room temperature to `/roomtemp` every few minutes. The `current`
-parameter accepts a variety of formats:
+POST the current room temperature to `/roomtemp` every few minutes. The
+`current` parameter accepts several formats:
 
 ```bash
 # Plain decimal
@@ -293,56 +273,34 @@ Then call `rest_command.send_room_temp` from an automation that triggers every
 
 ---
 
-## The web UI
+## Tuning
 
-Open `http://therminus-host:6790` in any browser. It works well on mobile and
-can be added to the iPhone home screen as a standalone app (Safari → Share →
-Add to Home Screen).
+### Room is slow to reach setpoint
 
-**Front card** — shows:
-- Day of week and current time (top left)
-- Current weather icon and outdoor temperature (top right)
-- Room temperature (large)
-- State label: *HEATING*, *LOADING HOT WATER*, or *RESTING* (all-caps monospace, coloured)
-- A plain-language sentence explaining the current situation
+Increase `KP` slightly (try 1.2 or 1.5). This asks the pump for a higher water
+temperature when the room is cold. Don't go too high — the pump's own modulation
+handles the final approach.
 
-**Back panel** (tap the ⓘ button) — shows:
-- Raw status string with technical details
-- Current state (RUNNING / RESTING)
-- Last write time and next write countdown
-- Room temperature history chart for the current day
-
----
-
-## Tuning guide
-
-Currently AI-generated so take with a grain of salt.
-
-### The room is slow to reach setpoint
-
-Increase `KP` slightly (try 1.2 or 1.5). This makes the proportional nudge
-larger, asking the pump for a higher water temperature when the room is cold.
-Be careful not to go too high — the pump's own modulation handles the final
-approach.
-
-### The pump cycles too frequently
+### Pump cycles too frequently
 
 Increase `BAND` (try 0.4 or 0.5). A wider deadband means the room has to drift
-further from setpoint before a state change is triggered, resulting in fewer but
-longer heating cycles — which is better for heat pump efficiency.
+further before a state change fires, resulting in fewer but longer heating
+cycles — which is better for heat pump efficiency.
 
-### The floor feels cold between runs
+### Floor feels cold between runs
 
-Lower `FLOOR_COMFORT_TEMP` slightly (try 23°C). This makes the cold-floor
-trigger fire earlier, starting a heating run before the floor has cooled as far.
+Lower `FLOOR_COMFORT_TEMP` slightly (try 23°C). This triggers the cold-floor
+start earlier, before the floor has cooled as far.
 
-### The pump runs too long / does not stop when the room is warm
+### Pump runs too long / doesn't stop when room is warm
 
-Check that the three-way valve register name matches what your pump reports.
-Look in the logs for lines like:
+Check that the valve register name matches what your pump reports. Look in the
+logs for:
+
 ```
 [therminus] ebus: flow=38°C  comp=45%  valve=heating circuit  ...
 ```
+
 If `valve` shows something other than `heating circuit` during a heating run,
 update `VALVE_HEATING` in the config to match.
 
