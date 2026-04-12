@@ -134,11 +134,12 @@ def _run_async(coro):
 async def _get_ebus():
     """Return the shared Ebus instance, creating it on first call."""
     global _ebus
-    if _ebus is None:
+     # we don't cache currently because pyebus might get confused after no signal
+    if True or _ebus is None:
         from pyebus import Ebus
         _ebus = Ebus(EBUSD_HOST, port=EBUSD_PORT)
         await _ebus.async_load_msgdefs()
-        print("[ebus] definitions loaded from ebusd")
+        # print("[ebus] definitions loaded from ebusd")
     return _ebus
 
 
