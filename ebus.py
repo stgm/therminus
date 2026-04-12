@@ -14,6 +14,10 @@ Public attributes:
     last_write_time           datetime of last successful write, or None
 """
 
+# Three-way valve position strings as reported by ebusd.
+VALVE_HEATING = 'heating circuit'
+VALVE_DHW     = 'warm water circuit'
+
 import asyncio
 import threading
 from dataclasses import dataclass, field, fields as dc_fields
@@ -38,18 +42,43 @@ class Telemetry:
     and a 'type' key for parsing. This is the single source of truth for the
     read mapping — add a field here and it is automatically read from ebusd.
     """
-    target_flow_temp: float | None = field(default=None, metadata={"msgdef": "targetflowtemp",         "type": float})
-    flow_temp:        float | None = field(default=None, metadata={"msgdef": "flowtemp",               "type": float})
-    min_flow_temp:    float | None = field(default=None, metadata={"msgdef": "minflowtemp",            "type": float})
-    max_flow_temp:    float | None = field(default=None, metadata={"msgdef": "maxflowtemp",            "type": float})
-    compressor_speed: float | None = field(default=None, metadata={"msgdef": "rundatacompressorspeed", "type": float})
-    valve:            str   | None = field(default=None, metadata={"msgdef": "threewayvalve",          "type": str})
-    outdoor_temp:     float | None = field(default=None, metadata={"msgdef": "outdoortemp",            "type": float})
+    target_flow_temp:      float | None = field(default=None, metadata={"msgdef": "targetflowtemp",         "type": float})
+    flow_temp:             float | None = field(default=None, metadata={"msgdef": "flowtemp",               "type": float})
+    min_flow_temp:         float | None = field(default=None, metadata={"msgdef": "minflowtemp",            "type": float})
+    max_flow_temp:         float | None = field(default=None, metadata={"msgdef": "maxflowtemp",            "type": float})
+    compressor_speed:      float | None = field(default=None, metadata={"msgdef": "rundatacompressorspeed", "type": float})
+    valve:                 str   | None = field(default=None, metadata={"msgdef": "threewayvalve",          "type": str})
+    outdoor_temp:          float | None = field(default=None, metadata={"msgdef": "outdoortemp",            "type": float})
+    building_circuit_flow: float | None = field(default=None, metadata={"msgdef": "buildingcircuitflow",    "type": float})
 
     @classmethod
     def msgdef_lookup(cls) -> dict[str, tuple[str, type]]:
         """Return {ebusd_msgdef: (field_name, type)} for all fields."""
         return {f.metadata["msgdef"]: (f.name, f.metadata["type"]) for f in dc_fields(cls)}
+
+    def compressor_on(self) -> bool:
+        """Compressor is running (speed known and > 0)."""
+        return self.compressor_speed is not None and self.compressor_speed > 0
+
+    def compressor_off(self) -> bool:
+        """Compressor is confirmed stopped (speed known and == 0)."""
+        return self.compressor_speed is not None and self.compressor_speed == 0
+
+    def heating(self) -> bool:
+        """Compressor is running on the heating circuit."""
+        return self.compressor_on() and self.valve == VALVE_HEATING
+
+    def making_dhw(self) -> bool:
+        """Compressor is running on the domestic hot water circuit."""
+        return self.compressor_on() and self.valve == VALVE_DHW
+
+    def circuit_running(self) -> bool:
+        """Building circuit circulation pump is confirmed on."""
+        return self.building_circuit_flow is not None and self.building_circuit_flow > 0
+
+    def circuit_off(self) -> bool:
+        """Building circuit circulation pump is confirmed off (flow == 0)."""
+        return self.building_circuit_flow is not None and self.building_circuit_flow == 0
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────

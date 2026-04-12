@@ -45,8 +45,10 @@ controller = HeatPumpController()
 
 def _make_badge() -> dict:
     """Badge label and CSS class for the current state. Called with state_lock held."""
-    if controller.dhw_active:
+    if controller.state == "WATER":
         return {"label": "Loading hot water", "cls": "dhw", "active": False}
+    if controller.state == "OFF":
+        return {"label": "Off", "cls": "off", "active": False}
     if controller.state == "RUNNING":
         return {"label": "Heating", "cls": "heating", "active": True}
     if controller.state == "RESTING":
@@ -102,34 +104,34 @@ def _make_status_sentence() -> str:
     if current_temp is None:
         return "Waking up, waiting for the first temperature reading."
 
-    dhw_prefix = "Loading hot water. " if controller.dhw_active else ""
-    elapsed    = (datetime.now() - controller.state_since).total_seconds()
-    diff       = current_temp - controller.setpoint
-    band       = controller.band
+    elapsed = (datetime.now() - controller.state_since).total_seconds()
+    diff    = current_temp - controller.setpoint
+    band    = controller.band
 
-    if controller.state == "RESTING":
+    if controller.state == "WATER":
+        return f"Loading hot water. Been at it for {elapsed/60:.0f} min."
+
+    elif controller.state == "OFF":
+        return "Outside is warm enough — pump has switched off circulation."
+
+    elif controller.state == "RESTING":
         rest_remaining = max(0, controller.t_min_rest - elapsed)
         if diff > band:
-            return dhw_prefix + "Giving the floor a rest, it's warm enough!"
+            return "Giving the floor a rest, it's warm enough!"
         elif diff < -band:
-            return dhw_prefix + f"I know it's getting colder, but resting for {rest_remaining/60:.0f} mins."
+            return f"I know it's getting colder, but resting for {rest_remaining/60:.0f} mins."
         else:
-            return dhw_prefix + "Heating done. I'll let it rest for now."
+            return "Heating done. I'll let it rest for now."
 
     elif controller.state == "IDLE":
         if diff > band:
-            return dhw_prefix + "Pretty warm inside! Pump won't run for now."
+            return "Pretty warm inside! Pump won't run for now."
         elif diff < -band:
-            return dhw_prefix + "Getting a bit cool. Heating will kick in shortly."
+            return "Getting a bit cool. Heating will kick in shortly."
         else:
-            return dhw_prefix + "Temperature is fine. Tuning where needed."
+            return "Temperature is fine. Tuning where needed."
 
     elif controller.state == "RUNNING":
-        if controller.dhw_active:
-            if diff < -band:
-                return "Pump is charging hot water, will start heating after."
-            else:
-                return "The hot water tank is being charged."
         if diff > band:
             return "Heating the floor a little."
         elif diff < -band:
@@ -145,10 +147,9 @@ def _tick():
     Ebus I/O happens outside state_lock (blocking calls routed through the
     asyncio loop); control logic and state updates happen inside it.
     """
-    with state_lock:
-        state_snapshot = controller.state
-    # Ebus reads outside the lock (blocking I/O)
-    telemetry = ebus.read_telemetry() if state_snapshot in ("RUNNING", "IDLE") else ebus.Telemetry()
+    # Ebus reads outside the lock (blocking I/O) — always read so we can detect
+    # OFF (circuit flow) and WATER (DHW valve) from any state.
+    telemetry = ebus.read_telemetry()
 
     with state_lock:
         if current_temp is not None:
