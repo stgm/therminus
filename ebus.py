@@ -39,18 +39,19 @@ class Telemetry:
     """
     Snapshot of pump telemetry from a single ebus read session.
 
-    Each field carries a 'msgdef' metadata key with the ebusd message name,
-    and a 'type' key for parsing. This is the single source of truth for the
-    read mapping — add a field here and it is automatically read from ebusd.
+    Each field carries 'circuit', 'msgdef', and 'type' metadata keys.
+    'circuit' and 'msgdef' together uniquely identify the ebusd message.
+    This is the single source of truth for the read mapping — add a field
+    here and it is automatically read from ebusd.
     """
-    target_flow_temp:      float | None = field(default=None, metadata={"msgdef": "targetflowtemp",         "type": float})
-    flow_temp:             float | None = field(default=None, metadata={"msgdef": "flowtemp",               "type": float})
-    min_flow_temp:         float | None = field(default=None, metadata={"msgdef": "minflowtemp",            "type": float})
-    max_flow_temp:         float | None = field(default=None, metadata={"msgdef": "maxflowtemp",            "type": float})
-    compressor_speed:      float | None = field(default=None, metadata={"msgdef": "rundatacompressorspeed", "type": float})
-    valve:                 str   | None = field(default=None, metadata={"msgdef": "threewayvalve",          "type": str})
-    outdoor_temp:          float | None = field(default=None, metadata={"msgdef": "outdoortemp",            "type": float})
-    building_circuit_flow: float | None = field(default=None, metadata={"msgdef": "buildingcircuitflow",    "type": float})
+    target_flow_temp:      float | None = field(default=None, metadata={"circuit": "hmu",   "msgdef": "TargetFlowTemp",         "type": float})
+    flow_temp:             float | None = field(default=None, metadata={"circuit": "hmu",   "msgdef": "FlowTemp",               "type": float})
+    min_flow_temp:         float | None = field(default=None, metadata={"circuit": "hmu",   "msgdef": "MinFlowTemp",            "type": float})
+    max_flow_temp:         float | None = field(default=None, metadata={"circuit": "hmu",   "msgdef": "MaxFlowTemp",            "type": float})
+    compressor_speed:      float | None = field(default=None, metadata={"circuit": "hmu",   "msgdef": "RunDataCompressorSpeed", "type": float})
+    valve:                 str   | None = field(default=None, metadata={"circuit": "vwzio", "msgdef": "ThreeWayValve",          "type": str})
+    outdoor_temp:          float | None = field(default=None, metadata={"circuit": "vwzio", "msgdef": "OutdoorTemp",            "type": float})
+    building_circuit_flow: float | None = field(default=None, metadata={"circuit": "hmu",   "msgdef": "BuildingCircuitFlow",    "type": float})
 
     def compressor_on(self) -> bool:
         """Compressor is running (speed known and > 0)."""
@@ -134,6 +135,7 @@ async def _make_ebus():
     from pyebus import Ebus
     ebus = Ebus(EBUSD_HOST, port=EBUSD_PORT)
     await ebus.async_load_msgdefs()
+    print(f"[ebus] definitions loaded from ebusd")
     return ebus
 
 
@@ -153,7 +155,9 @@ async def _async_read_telemetry() -> Telemetry:
     ebus   = await _make_ebus()
     result = {}
     for f in dc_fields(Telemetry):
-        msgdef = ebus.msgdefs.get(EBUSD_CIRCUIT, f.metadata["msgdef"])
+        circuit = f.metadata["circuit"]
+        name    = f.metadata["msgdef"]
+        msgdef  = ebus.msgdefs.get(circuit, name)
         if msgdef is None:
             continue
         msg = await ebus.async_read(msgdef)
@@ -163,5 +167,5 @@ async def _async_read_telemetry() -> Telemetry:
                 raw = msg.values[0] if hasattr(msg, 'values') else msg
                 result[f.name] = typ(str(raw).strip() if typ is str else raw)
             except (TypeError, ValueError, IndexError) as e:
-                print(f"[ebus] parse error for {EBUSD_CIRCUIT}/{f.metadata['msgdef']}: {e}  raw={msg!r}")
+                print(f"[ebus] parse error for {circuit}/{name}: {e}  raw={msg!r}")
     return Telemetry(**result)
