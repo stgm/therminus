@@ -190,16 +190,16 @@ class HeatPumpController:
                 self.target = round(
                     max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
 
-        # make sure extender stops when room temp reached
-        # if current_temp > SETPOINT + 0.1:
-        #     self.desired_min_flow_temp = MIN_FLOW_TEMP
-        #     return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
-
         # ── Phase 3: run extender ─────────────────────────────────────────────
         # strategy: keep raising the minimum flow temp while doing the heating run
 
-        if self.state != "RESTING":
-            self.desired_min_flow_temp = None
+        # make sure extender stops when room temp reached
+        if self.state != "RUNNING":
+            self.desired_min_flow_temp = MIN_FLOW_TEMP
+            return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
+
+        # if self.state != "RESTING":
+        #     self.desired_min_flow_temp = None
 
         if self.state == "RUNNING" and None not in (
                 telemetry.compressor_speed, telemetry.flow_temp, telemetry.target_flow_temp,
