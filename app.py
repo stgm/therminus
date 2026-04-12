@@ -104,10 +104,6 @@ def _make_status_sentence() -> str:
     if current_temp is None:
         return "Waking up, waiting for the first temperature reading."
 
-    elapsed = (datetime.now() - controller.state_since).total_seconds()
-    diff    = current_temp - controller.setpoint
-    band    = controller.band
-
     if controller.state == "WATER":
         return f"Casually loading the hot water tank."
 
@@ -115,27 +111,26 @@ def _make_status_sentence() -> str:
         return "Outside seems warm enough so everything's off."
 
     elif controller.state == "RESTING":
-        rest_remaining = max(0, controller.t_min_rest - elapsed)
-        if diff > band:
+        if controller.temp_above_upper_band():
             return "Giving the floor a rest, it's warm enough!"
-        elif diff < -band:
+        elif controller.temp_below_lower_band():
             return f"Slightly cold, but your heat pump is taking a nap..."
         else:
             return "Heating done. I'll let it rest for now."
 
     elif controller.state == "IDLE":
-        if diff > band:
+        if controller.temp_above_upper_band():
             return "Pretty warm inside!"
-        elif diff < -band:
+        elif controller.temp_below_lower_band():
             return "Waiting for the pump to notice that it's a bit cold."
         else:
             return "Temperature is fine. Tuning up and down where needed."
 
     elif controller.state == "RUNNING":
-        if diff > band:
+        if controller.temp_above_upper_band():
             return "Heating the floor a little."
-        elif diff < -band:
-            return f"Heating right now! Been at it for {elapsed/60:.0f} min."
+        elif controller.temp_below_lower_band():
+            return f"Heating right now! Been at it for {controller.elapsed()/60:.0f} min."
         else:
             return "Heating a little to keep it nice and cosy."
 
@@ -317,20 +312,14 @@ def api_stream():
 
 # ── Startup ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Therminus heat pump controller")
-    parser.add_argument(
-        "--initial-rest", type=int, default=None, metavar="MINUTES",
-        help="Override the initial resting period in minutes (default: 60). "
-             "Use 0 to start immediately."
-    )
-    args = parser.parse_args()
-
-    if args.initial_rest is not None:
-        controller.t_min_rest  = args.initial_rest * 60
-        controller.state_since = datetime.now() - timedelta(seconds=controller.t_min_rest)
-        print(f"[therminus] initial rest overridden: {args.initial_rest} min "
-              f"({'immediate start eligible' if args.initial_rest == 0 else 'timer already elapsed'})")
+    # import argparse
+    # parser = argparse.ArgumentParser(description="Therminus heat pump controller")
+    # parser.add_argument(
+    #     "--initial-rest", type=int, default=None, metavar="MINUTES",
+    #     help="Override the initial resting period in minutes (default: 60). "
+    #          "Use 0 to start immediately."
+    # )
+    # args = parser.parse_args()
 
     _load_history()
     ebus.start()
