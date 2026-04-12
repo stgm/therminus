@@ -9,7 +9,6 @@ Public attributes (read by app.py):
     state_since  datetime when the current state was entered
     t_min_rest   seconds the current RESTING period must last
     target       setpoint (°C) to write to the pump after the last tick
-    dhw_active   True when state is WATER
     setpoint     desired room temperature (°C)
     band         deadband half-width (°C)
 
@@ -75,7 +74,6 @@ class HeatPumpController:
         self.state_since = datetime.now()
         self.t_min_rest  = T_MIN_REST
         self.target      = IDLE_TEMP
-        self.dhw_active  = False
         self.desired_min_flow_temp: float | None = None  # None = no write needed
 
         # Last known sensor values — used by debug_status()
@@ -83,7 +81,7 @@ class HeatPumpController:
         self._compressor_speed = None
         self._water_ended_at: datetime | None = None  # when DHW last stopped (for after-run wait)
 
-    def tick(self, now: datetime, current_temp: float, telemetry) -> dict:
+    def tick(self, current_temp: float, telemetry) -> dict:
         """
         Advance the state machine one step.
 
@@ -94,8 +92,9 @@ class HeatPumpController:
         Returns {"room_target": float, "min_flow_temp": float | None}.
         """
         if current_temp is None:
-            return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
+            return {"room_target": None, "min_flow_temp": None}
 
+        now = datetime.now()
         self._current_temp     = current_temp
         self._compressor_speed = telemetry.compressor_speed
 
@@ -106,12 +105,8 @@ class HeatPumpController:
 
         # Enter WATER from any non-WATER state (heat pump started making DHW)
         if self.state != "WATER" and telemetry.making_dhw():
-            prev_state = self.state
-            self.state       = "WATER"
-            self.state_since = now
+            self._transition("WATER")
             self._water_ended_at = None
-            self.desired_min_flow_temp = MIN_FLOW_TEMP  # reset any run extender
-            print(f"[controller] {prev_state} → WATER")
 
         elif self.state == "WATER":
             if telemetry.making_dhw():
@@ -120,75 +115,45 @@ class HeatPumpController:
                 if self._water_ended_at is None:
                     self._water_ended_at = now
                 elif (now - self._water_ended_at).total_seconds() >= WATER_AFTER_RUN_WAIT:
-                    self.state       = "IDLE"
-                    self.state_since = now
+                    self._transition("IDLE")
                     self._water_ended_at = None
-                    print(f"[controller] WATER → IDLE  (after-run wait elapsed)")
 
         elif self.state == "OFF":
             if telemetry.circuit_running():
                 # WATER is handled by the first branch above (making_dhw() fires first).
                 # Distinguish between a real heating run and an idle restart.
-                self.state       = "RUNNING" if telemetry.heating() else "IDLE"
-                self.state_since = now
-                print(f"[controller] OFF → {self.state}  flow={telemetry.building_circuit_flow}")
+                self._transition("RUNNING" if telemetry.heating() else "IDLE")
 
-        else:
-            # Check for OFF entry from any remaining state (IDLE, RUNNING, RESTING)
-            if telemetry.circuit_off():
-                prev_state = self.state
-                self.state       = "OFF"
-                self.state_since = now
-                self.desired_min_flow_temp = MIN_FLOW_TEMP
-                print(f"[controller] {prev_state} → OFF  (circuit flow = 0)")
+        # Remaining states: IDLE, RUNNING, RESTING
+        elif telemetry.circuit_off():
+            self._transition("OFF")
 
-            elif self.state == "RESTING":
-                if elapsed >= self.t_min_rest:
-                    self.state       = "IDLE"
-                    self.state_since = now
-                    print(f"[controller] RESTING → IDLE  rested={elapsed/60:.0f}min")
+        elif self.state == "RESTING":
+            if elapsed >= self.t_min_rest:
+                self._transition("IDLE")
 
-            elif self.state == "IDLE":
-                if telemetry.heating():
-                    self.state       = "RUNNING"
-                    self.state_since = now
-                    print(f"[controller] IDLE → RUNNING  room={current_temp:.1f}")
+        elif self.state == "IDLE":
+            if telemetry.heating():
+                self._transition("RUNNING")
 
-            elif self.state == "RUNNING":
-                if telemetry.compressor_off():
-                    self.state       = "RESTING"
-                    self.t_min_rest  = T_MIN_REST
-                    self.state_since = now
-                    self.desired_min_flow_temp = MIN_FLOW_TEMP  # undo any raised minimum
-                    print(f"[controller] RUNNING → RESTING (compressor stopped)"
-                          f"  room={current_temp:.1f}  rest={self.t_min_rest/60:.0f}min")
-
-        self.dhw_active = (self.state == "WATER")
+        elif self.state == "RUNNING":
+            if telemetry.compressor_off():
+                self.t_min_rest = T_MIN_REST
+                self._transition("RESTING")
 
         # ── Phase 2: compute room target───────────────────────────────────────
 
-        if self.state in ("RESTING"):
-            # keep artificially low temperature setting — pump either resting,
-            # busy with DHW, or circulation is off
-            self.target = IDLE_TEMP
+        if self.state == "RESTING":
+            # Suppress the pump while the floor distributes heat.
+            self._set_idle_target()
 
-        elif self.state == "IDLE":
+        else:
+            # WATER and OFF are heat-pump-controlled, but we still track what heating
+            # would require so the value is useful for display and debug.
             if current_temp > (SETPOINT + BAND):
-                # keep artificially low temperature when it's fairly hot inside
-                self.target = IDLE_TEMP
+                self._set_idle_target()
             else:
-                # core algo: mirror target from room temp
-                self.target = round(
-                    max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
-
-        elif self.state == "RUNNING":
-            if current_temp > (SETPOINT + BAND):
-                # if room temp gets too high we set artificially low target
-                self.target = IDLE_TEMP
-            else:
-                # core algo: mirror target from room temp
-                self.target = round(
-                    max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
+                self._set_active_target(current_temp, error)
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
         # strategy: keep raising the minimum flow temp while doing the heating run
@@ -201,11 +166,8 @@ class HeatPumpController:
         # if self.state != "RESTING":
         #     self.desired_min_flow_temp = None
 
-        if self.state == "RUNNING" and None not in (
-                telemetry.compressor_speed, telemetry.flow_temp, telemetry.target_flow_temp,
-                telemetry.min_flow_temp, telemetry.max_flow_temp):
-            compressor_running_at_min = (telemetry.compressor_on()
-                                         and abs(telemetry.compressor_speed - COMPRESSOR_MIN_SPEED) <= COMPRESSOR_MIN_TOL)
+        if self._has_run_extender_data(telemetry):
+            compressor_running_at_min = self._is_compressor_running_at_min(telemetry)
 
             if (current_temp > SETPOINT + 0.1 and elapsed >= 3 * 60 * 60):
                 self.desired_min_flow_temp = MIN_FLOW_TEMP
@@ -238,14 +200,40 @@ class HeatPumpController:
 
         return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
 
-    def debug_status(self, now: datetime) -> str:
+    def _transition(self, new_state: str) -> None:
+        """Record a state change and log it."""
+        print(f"[controller] {self.state} → {new_state}")
+        self.state       = new_state
+        self.state_since = datetime.now()
+
+    def _has_run_extender_data(self, telemetry) -> bool:
+        """True when all telemetry fields required by the run extender are available."""
+        return None not in (
+            telemetry.compressor_speed, telemetry.flow_temp, telemetry.target_flow_temp,
+            telemetry.min_flow_temp, telemetry.max_flow_temp)
+
+    def _is_compressor_running_at_min(self, telemetry) -> bool:
+        """True when the compressor is on and running at its minimum modulation speed."""
+        return (telemetry.compressor_on()
+                and abs(telemetry.compressor_speed - COMPRESSOR_MIN_SPEED) <= COMPRESSOR_MIN_TOL)
+
+    def _set_active_target(self, current_temp: float, error: float) -> None:
+        """Set target using the Vaillant active algorithm: mirror room error onto flow setpoint."""
+        self.target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
+
+    def _set_idle_target(self) -> None:
+        """Set target to idle temp — low enough that the pump will not run its compressor."""
+        self.target = IDLE_TEMP
+
+    def debug_status(self) -> str:
         """Internal debug status string. Not for display — use for logging/back panel."""
         if self._current_temp is None:
             return "Waiting for room temperature…"
+        now     = datetime.now()
         t       = self._current_temp
         elapsed = (now - self.state_since).total_seconds()
         error   = SETPOINT - t
-        dhw     = self.dhw_active
+        dhw     = (self.state == "WATER")
         if self.state == "WATER":
             wait = ""
             if self._water_ended_at is not None:

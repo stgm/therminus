@@ -153,7 +153,7 @@ def _tick():
 
     with state_lock:
         if current_temp is not None:
-            ebus.write(controller.tick(datetime.now(), current_temp, telemetry))
+            ebus.write(controller.tick(current_temp, telemetry))
         sentence = _make_status_sentence()
         badge    = _make_badge()
         event    = _record_state_event(badge["cls"])
@@ -166,7 +166,7 @@ def _tick():
             "room_temp": current_temp,
             "target": controller.target,
             "state": controller.state,
-            "status": controller.debug_status(datetime.now()),
+            "status": controller.debug_status(),
             "status_sentence": sentence,
             "badge": badge,
             "state_event": event,
@@ -288,7 +288,7 @@ def api_stream():
                 "type": "snapshot",
                 "room_temp": current_temp,
                 "target": controller.target,
-                "status": controller.debug_status(datetime.now()),
+                "status": controller.debug_status(),
                 "state": controller.state,
                 "status_sentence": _make_status_sentence(),
                 "badge": _make_badge(),
