@@ -30,6 +30,7 @@ EBUSD_CIRCUIT   = "hmu"      # ebusd circuit that owns all heat pump messages
 
 # ── Module state ───────────────────────────────────────────────────────────────
 _loop           = None
+_ebus           = None    # shared Ebus instance, initialized on first use
 last_target     = None    # last TargetTempHc value successfully written (°C)
 last_write_time = None    # datetime of last successful write
 
@@ -130,18 +131,20 @@ def _run_async(coro):
     return fut.result(timeout=15)
 
 
-async def _make_ebus():
-    """Create and return a connected, msgdef-loaded Ebus instance."""
-    from pyebus import Ebus
-    ebus = Ebus(EBUSD_HOST, port=EBUSD_PORT)
-    await ebus.async_load_msgdefs()
-    print(f"[ebus] definitions loaded from ebusd")
-    return ebus
+async def _get_ebus():
+    """Return the shared Ebus instance, creating it on first call."""
+    global _ebus
+    if _ebus is None:
+        from pyebus import Ebus
+        _ebus = Ebus(EBUSD_HOST, port=EBUSD_PORT)
+        await _ebus.async_load_msgdefs()
+        print("[ebus] definitions loaded from ebusd")
+    return _ebus
 
 
 async def _async_write(msgdef_name: str, value: float) -> None:
     """Write a single value to ebusd by circuit + message name."""
-    ebus   = await _make_ebus()
+    ebus   = await _get_ebus()
     msgdef = ebus.msgdefs.get(EBUSD_CIRCUIT, msgdef_name)
     if msgdef is None:
         print(f"[ebus] WARNING: {EBUSD_CIRCUIT}/{msgdef_name} msgdef not found")
@@ -152,7 +155,7 @@ async def _async_write(msgdef_name: str, value: float) -> None:
 
 async def _async_read_telemetry() -> Telemetry:
     """Read telemetry values from ebusd in a single session."""
-    ebus   = await _make_ebus()
+    ebus   = await _get_ebus()
     result = {}
     for f in dc_fields(Telemetry):
         circuit = f.metadata["circuit"]
