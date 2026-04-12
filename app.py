@@ -109,27 +109,27 @@ def _make_status_sentence() -> str:
     band    = controller.band
 
     if controller.state == "WATER":
-        return f"Loading hot water. Been at it for {elapsed/60:.0f} min."
+        return f"Casually loading the hot water tank."
 
     elif controller.state == "OFF":
-        return "Outside is warm enough — pump has switched off circulation."
+        return "Outside seems warm enough so everything's off."
 
     elif controller.state == "RESTING":
         rest_remaining = max(0, controller.t_min_rest - elapsed)
         if diff > band:
             return "Giving the floor a rest, it's warm enough!"
         elif diff < -band:
-            return f"I know it's getting colder, but resting for {rest_remaining/60:.0f} mins."
+            return f"Slightly cold, but your heat pump is taking a nap..."
         else:
             return "Heating done. I'll let it rest for now."
 
     elif controller.state == "IDLE":
         if diff > band:
-            return "Pretty warm inside! Pump won't run for now."
+            return "Pretty warm inside!"
         elif diff < -band:
-            return "Getting a bit cool. Heating will kick in shortly."
+            return "Waiting for the pump to notice that it's a bit cold."
         else:
-            return "Temperature is fine. Tuning where needed."
+            return "Temperature is fine. Tuning up and down where needed."
 
     elif controller.state == "RUNNING":
         if diff > band:

@@ -163,9 +163,6 @@ class HeatPumpController:
             self.desired_min_flow_temp = MIN_FLOW_TEMP
             return {"room_target": self.target, "min_flow_temp": self.desired_min_flow_temp}
 
-        # if self.state != "RESTING":
-        #     self.desired_min_flow_temp = None
-
         if self._has_run_extender_data(telemetry):
             compressor_running_at_min = self._is_compressor_running_at_min(telemetry)
 
