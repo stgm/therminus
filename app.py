@@ -101,7 +101,7 @@ def _load_history():
 
 def _make_status_sentence() -> str:
     """Plain-language explanation of the current state. Called with state_lock held."""
-    if current_temp is None:
+    if controller.current_temp() is None:
         return "Waking up, waiting for the first temperature reading."
 
     if controller.state == "WATER":

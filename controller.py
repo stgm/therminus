@@ -85,6 +85,9 @@ class HeatPumpController:
         self._compressor_speed = None
         self._water_ended_at: datetime | None = None  # when DHW last stopped (for after-run wait)
 
+    def current_temp(self):
+        return self._current_temp
+
     def error(self):
         return SETPOINT - self._current_temp
 
