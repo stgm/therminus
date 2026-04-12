@@ -26,6 +26,7 @@ from datetime import datetime
 # ── Configuration ──────────────────────────────────────────────────────────────
 EBUSD_HOST      = "127.0.0.1"
 EBUSD_PORT      = 8888
+EBUSD_CIRCUIT   = "hmu"      # ebusd circuit that owns all heat pump messages
 
 # ── Module state ───────────────────────────────────────────────────────────────
 _loop           = None
@@ -50,11 +51,6 @@ class Telemetry:
     valve:                 str   | None = field(default=None, metadata={"msgdef": "threewayvalve",          "type": str})
     outdoor_temp:          float | None = field(default=None, metadata={"msgdef": "outdoortemp",            "type": float})
     building_circuit_flow: float | None = field(default=None, metadata={"msgdef": "buildingcircuitflow",    "type": float})
-
-    @classmethod
-    def msgdef_lookup(cls) -> dict[str, tuple[str, type]]:
-        """Return {ebusd_msgdef: (field_name, type)} for all fields."""
-        return {f.metadata["msgdef"]: (f.name, f.metadata["type"]) for f in dc_fields(cls)}
 
     def compressor_on(self) -> bool:
         """Compressor is running (speed known and > 0)."""
@@ -142,31 +138,30 @@ async def _make_ebus():
 
 
 async def _async_write(msgdef_name: str, value: float) -> None:
-    """Write a single value to ebusd by msgdef name."""
-    ebus = await _make_ebus()
-    name = msgdef_name.lower()
-    for msgdef in ebus.msgdefs:
-        if msgdef.name.lower() == name:
-            await ebus.async_write(msgdef, value)
-            print(f"[ebus] wrote {msgdef_name} = {value}")
-            return
-    print(f"[ebus] WARNING: {msgdef_name} msgdef not found")
+    """Write a single value to ebusd by circuit + message name."""
+    ebus   = await _make_ebus()
+    msgdef = ebus.msgdefs.get(EBUSD_CIRCUIT, msgdef_name)
+    if msgdef is None:
+        print(f"[ebus] WARNING: {EBUSD_CIRCUIT}/{msgdef_name} msgdef not found")
+        return
+    await ebus.async_write(msgdef, value)
+    print(f"[ebus] wrote {EBUSD_CIRCUIT}/{msgdef_name} = {value}")
 
 
 async def _async_read_telemetry() -> Telemetry:
     """Read telemetry values from ebusd in a single session."""
     ebus   = await _make_ebus()
-    lookup = Telemetry.msgdef_lookup()
     result = {}
-    for msgdef in ebus.msgdefs:
-        entry = lookup.get(msgdef.name.lower())
-        if entry:
-            name, typ = entry
-            msg = await ebus.async_read(msgdef)
-            if msg is not None:
-                try:
-                    raw = msg.values[0] if hasattr(msg, 'values') else msg
-                    result[name] = typ(str(raw).strip() if typ is str else raw)
-                except (TypeError, ValueError, IndexError) as e:
-                    print(f"[ebus] parse error for {msgdef.name}: {e}  raw={msg!r}")
+    for f in dc_fields(Telemetry):
+        msgdef = ebus.msgdefs.get(EBUSD_CIRCUIT, f.metadata["msgdef"])
+        if msgdef is None:
+            continue
+        msg = await ebus.async_read(msgdef)
+        if msg is not None:
+            try:
+                typ = f.metadata["type"]
+                raw = msg.values[0] if hasattr(msg, 'values') else msg
+                result[f.name] = typ(str(raw).strip() if typ is str else raw)
+            except (TypeError, ValueError, IndexError) as e:
+                print(f"[ebus] parse error for {EBUSD_CIRCUIT}/{f.metadata['msgdef']}: {e}  raw={msg!r}")
     return Telemetry(**result)
