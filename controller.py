@@ -86,7 +86,7 @@ class HeatPumpController:
         self._water_ended_at: datetime | None = None  # when DHW last stopped (for after-run wait)
 
     def error(self):
-        return SETPOINT - self._current_temp()
+        return SETPOINT - self._current_temp
 
     def elapsed(self) -> int:
         return (datetime.now() - self._state_since).total_seconds()
