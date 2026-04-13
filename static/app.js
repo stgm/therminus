@@ -155,31 +155,47 @@ function updateNextWrite() {
 setInterval(updateNextWrite, 1000);
 
 // ── SSE ───────────────────────────────────────────────────────────────────────
-const es = new EventSource('/api/stream');
-es.onmessage = (e) => {
-  const msg = JSON.parse(e.data);
-  if (msg.type === 'snapshot') {
-    for (const p of (msg.history || []))
-      chart.data.datasets[0].data.push({ x: new Date(p.ts.replace('T',' ')), y: p.value });
-    stateEvents = msg.state_events || [];
-    refreshAnnotations();
-    applyState(msg);
-    if (msg.last_write) applyState(msg);
-    applyWeather(msg.weather);
-    applyStatusSentence(msg);
-  }
-  if (msg.type === 'update') {
-    if (msg.room_temp != null)
-      chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
-    if (msg.state_event) {
-      stateEvents.push(msg.state_event);
+let es;
+let lastSseMessage = Date.now();
+
+function connectSSE() {
+  if (es) { es.onmessage = null; es.onerror = null; es.close(); }
+  es = new EventSource('/api/stream');
+  es.onmessage = (e) => {
+    lastSseMessage = Date.now();
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'snapshot') {
+      for (const p of (msg.history || []))
+        chart.data.datasets[0].data.push({ x: new Date(p.ts.replace('T',' ')), y: p.value });
+      stateEvents = msg.state_events || [];
       refreshAnnotations();
-    } else {
-      chart.update('none');
+      applyState(msg);
+      if (msg.last_write) applyState(msg);
+      applyWeather(msg.weather);
+      applyStatusSentence(msg);
     }
-    applyState(msg);
-    applyStatusSentence(msg);
-    if (msg.wrote) lastWriteTime = new Date(msg.ts.replace('T',' '));
-  }
-  if (msg.type === 'weather') applyWeather(msg);
-};
+    if (msg.type === 'update') {
+      if (msg.room_temp != null)
+        chart.data.datasets[0].data.push({ x: new Date(msg.ts.replace('T',' ')), y: msg.room_temp });
+      if (msg.state_event) {
+        stateEvents.push(msg.state_event);
+        refreshAnnotations();
+      } else {
+        chart.update('none');
+      }
+      applyState(msg);
+      applyStatusSentence(msg);
+      if (msg.wrote) lastWriteTime = new Date(msg.ts.replace('T',' '));
+    }
+    if (msg.type === 'weather') applyWeather(msg);
+  };
+}
+
+connectSSE();
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  const stale = es.readyState === EventSource.CLOSED
+             || Date.now() - lastSseMessage > 60_000;
+  if (stale) connectSSE();
+});
