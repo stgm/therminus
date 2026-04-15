@@ -146,7 +146,7 @@ def _activate_night_mode(outdoor_t: float | None) -> None:
     with state_lock:
         controller.start_night_mode(
             outdoor_temp=outdoor_t,
-            forecast_low=c.get('forecast_low_tomorrow'),
+            forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
             forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
             room_temp=current_temp,
         )
