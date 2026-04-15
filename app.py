@@ -36,7 +36,7 @@ HISTORY_POINTS  = 1440
 # must happen under state_lock, except where explicitly noted.
 state_lock       = threading.Lock()
 current_temp     = None          # most recent room temp from sensor POST (°C)
-_last_hour: int | None = None   # last processed hour, for night-mode crossing detection
+_night_mode_active: bool = False  # True while the overnight heating limiter is running
 room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for chart
 state_events     = deque(maxlen=2000)            # list of {ts, state} — badge transitions today
 _prev_badge_cls  = None                          # last recorded badge cls for transition detection
@@ -159,27 +159,23 @@ def _tick():
     Ebus I/O happens outside state_lock (blocking calls routed through the
     asyncio loop); control logic and state updates happen inside it.
     """
-    global _last_hour
+    global _night_mode_active
 
     # Ebus reads outside the lock (blocking I/O) — always read so we can detect
     # OFF (circuit flow) and WATER (DHW valve) from any state.
     telemetry = ebus.read_telemetry()
 
-    # Night mode hour-crossing detection. Runs every tick (every 60 s), which
-    # is precise enough for an overnight schedule. telemetry.outdoor_temp is
-    # passed directly so no separate global is needed.
-    _hour = datetime.now(_TZ).hour
-    if _last_hour is None:
-        # First tick — activate immediately if already inside the night window.
-        if _hour >= 22 or _hour < 7:
-            _activate_night_mode(telemetry.outdoor_temp)
-    elif _hour != _last_hour:
-        if _hour == 22:
-            _activate_night_mode(telemetry.outdoor_temp)
-        elif _hour == 7:
-            with state_lock:
-                controller.end_night_mode()
-    _last_hour = _hour
+    # Night mode activation/deactivation. Runs every tick (every 60 s), which
+    # is precise enough for an overnight schedule. The flag correctly handles
+    # startup inside the night window without any special-case logic.
+    _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 7
+    if _in_night_window and not _night_mode_active:
+        _activate_night_mode(telemetry.outdoor_temp)
+        _night_mode_active = True
+    elif not _in_night_window and _night_mode_active:
+        with state_lock:
+            controller.end_night_mode()
+        _night_mode_active = False
 
     with state_lock:
         if current_temp is not None:
