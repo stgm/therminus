@@ -169,7 +169,7 @@ def _tick():
     # is precise enough for an overnight schedule. The flag correctly handles
     # startup inside the night window without any special-case logic.
     _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 7
-    if _in_night_window and not _night_mode_active:
+    if _in_night_window and not _night_mode_active and current_temp is not None:
         _activate_night_mode(telemetry.outdoor_temp)
         _night_mode_active = True
     elif not _in_night_window and _night_mode_active:
