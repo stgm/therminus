@@ -80,6 +80,10 @@ class HeatPumpController:
         self._t_min_rest  = T_MIN_REST
         self._desired_min_flow_temp: float | None = None  # None = no write needed
 
+        # Night limiter (22:00–07:00)
+        self.night_limit_hours: float | None = None  # None = not in night mode
+        self.night_run_seconds: float = 0.0          # accumulated RUNNING time tonight
+
         # Last known sensor values — used by debug_status()
         self._current_temp     = None
         self._compressor_speed = None
@@ -158,7 +162,13 @@ class HeatPumpController:
 
         # ── Phase 2: compute room target───────────────────────────────────────
 
-        if self.state == "RESTING":
+        if self.night_limit_reached():
+            self._set_idle_target()
+            print(f"[controller] night limit reached"
+                    f"  total={self.night_run_seconds/3600:.2f}h"
+                    f"  limit={self.night_limit_hours:.1f}h")
+
+        elif self.state == "RESTING":
             # Suppress the pump while the floor distributes heat.
             self._set_idle_target()
 
@@ -211,11 +221,58 @@ class HeatPumpController:
 
         return {"room_target": self.target, "min_flow_temp": self._desired_min_flow_temp}
 
+    def start_night_mode(self,
+                         outdoor_temp: float | None,
+                         forecast_low: float | None,
+                         forecast_high_tomorrow: float | None,
+                         room_temp: float | None) -> None:
+        """
+        Activate the overnight heating limiter. Called once around 22:00.
+
+        Calculates the allowed heating hours from the formula:
+            A = 16 - AVERAGE(outdoor_temp, forecast_low, forecast_high_tomorrow)
+            B = 23 - room_temp
+            limit = max(0, A × B)  hours
+        """
+        temps = [t for t in (outdoor_temp, forecast_low, forecast_high_tomorrow)
+                 if t is not None]
+        avg   = sum(temps) / len(temps) if temps else 8.0
+        rt    = room_temp if room_temp is not None else 21.0
+        A     = 16 - avg
+        B     = 23 - rt
+        limit = max(0.0, A * B)
+
+        self.night_limit_hours = limit
+        self.night_run_seconds = 0.0
+        print(f"[controller] night mode:"
+              f"  outdoor={outdoor_temp} low={forecast_low} high_tom={forecast_high_tomorrow}"
+              f"  avg={avg:.1f} room={rt:.1f} A={A:.1f} B={B:.1f}"
+              f"  limit={limit:.1f}h")
+
+    def end_night_mode(self) -> None:
+        """Deactivate the overnight limiter. Called at 07:00."""
+        self.night_limit_hours = None
+        self.night_run_seconds = 0.0
+        print("[controller] night mode: off")
+
+    def night_limit_reached(self) -> bool:
+        (self.night_limit_hours is not None and
+            self.night_run_seconds >= self.night_limit_hours * 3600)
+
     def _transition(self, new_state: str) -> None:
         """Record a state change and log it."""
         print(f"[controller] {self.state} → {new_state}")
+        if self.state == "RUNNING" and new_state != "RUNNING":
+            self._accumulate_run()
         self.state       = new_state
         self._state_since = datetime.now()
+
+    def _accumulate_run(self) -> None:
+        """Called in tick() just before transitioning away from RUNNING.
+        Adds the current run's elapsed time to the night total."""
+        if self.night_limit_hours is None:
+            return
+        self.night_run_seconds += self.elapsed()
 
     def _has_run_extender_data(self, telemetry) -> bool:
         """True when all telemetry fields required by the run extender are available."""
@@ -239,34 +296,18 @@ class HeatPumpController:
     def debug_status(self) -> str:
         """Internal debug status string. Not for display — use for logging/back panel."""
         if self._current_temp is None:
-            return "Waiting for room temperature…"
-        now     = datetime.now()
-        t       = self._current_temp
-        elapsed = self.elapsed()
-        error   = self.error()
-        dhw     = (self.state == "WATER")
-        if self.state == "WATER":
-            wait = ""
-            if self._water_ended_at is not None:
-                waited = (now - self._water_ended_at).total_seconds()
-                wait = f"  after-run={waited/60:.0f}/{WATER_AFTER_RUN_WAIT/60:.0f}min"
-            return f"WATER  room={t:.1f}°C  elapsed={elapsed/60:.0f}min{wait}"
-        if self.state == "OFF":
-            return f"OFF  room={t:.1f}°C  (circuit flow = 0)"
-        if self.state == "RESTING":
-            return (f"RESTING  room={t:.1f}°C"
-                    f"  rested={elapsed/60:.0f}/{self._t_min_rest/60:.0f}min"
-                    f"  dhw={dhw}")
-        if self.state == "IDLE":
-            return (f"IDLE  room={t:.1f}°C"
-                    f"  → {self.target}°C  dhw={dhw}")
-        if self.state == "RUNNING":
-            ext = (f"  min↑{self._desired_min_flow_temp:.1f}°C"
-                   if self._desired_min_flow_temp and self._desired_min_flow_temp > MIN_FLOW_TEMP
-                   else "")
-            if t > (SETPOINT + BAND):
-                return (f"RUNNING  room={t:.1f}°C"
-                        f"  warm, waiting for compressor stop  ran={elapsed/60:.0f}min{ext}")
-            return (f"RUNNING  room={t:.1f}°C  err={error:+.2f}"
-                    f"  → {self.target}°C  ran={elapsed/60:.0f}min  dhw={dhw}{ext}")
-        return ""
+            return "INACTIVE waiting for first room temperature"
+
+        message = (
+            f"{self.state}: "
+            f"{self.elapsed()/60:.0f}min"
+        )
+
+        if self.night_limit_hours is not None:
+            message += " night:{self.night_run_seconds/60:.1f}/{self.night_limit_hours*60:.1f}min
+        if self.night_limit_reached():
+            message += " night:LIMIT REACHED"
+        if self.is_extender_running():
+            message += " extending run!"
+
+        return message

@@ -67,6 +67,7 @@ def fetch(on_update=None) -> None:
         'latitude':  LATITUDE,
         'longitude': LONGITUDE,
         'current':   'weather_code,temperature_2m,is_day',
+        'daily':     'temperature_2m_min,temperature_2m_max',
         'timezone':  'Europe/Amsterdam',
     })
     d = _fetch_url(f'https://api.open-meteo.com/v1/forecast?{params}')
@@ -79,7 +80,14 @@ def fetch(on_update=None) -> None:
     desc   = _DESC.get(code, 'Unknown')
     temp   = cur.get('temperature_2m')
     desc_str = f"{temp:.1f}°" if temp is not None else desc
-    cache = {'icon': icon, 'desc': desc_str, 'fetched_at': time.time()}
+    daily = d.get('daily', {})
+    mins  = daily.get('temperature_2m_min') or []
+    maxs  = daily.get('temperature_2m_max') or []
+    cache = {
+        'icon': icon, 'desc': desc_str, 'fetched_at': time.time(),
+        'forecast_low':           mins[0] if mins else None,
+        'forecast_high_tomorrow': maxs[1] if len(maxs) > 1 else None,
+    }
     print(f'[weather] {icon} {desc_str}')
     if on_update:
         on_update(icon, desc_str)

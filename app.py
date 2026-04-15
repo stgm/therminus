@@ -10,8 +10,11 @@ import threading
 import json
 import re
 import time
+import zoneinfo
 from datetime import datetime, timedelta
 from collections import deque
+
+_TZ = zoneinfo.ZoneInfo("Europe/Amsterdam")
 from pathlib import Path
 from flask import Flask, Response, render_template, jsonify, request
 from controller import HeatPumpController
@@ -33,6 +36,7 @@ HISTORY_POINTS  = 1440
 # must happen under state_lock, except where explicitly noted.
 state_lock       = threading.Lock()
 current_temp     = None          # most recent room temp from sensor POST (°C)
+_last_hour: int | None = None   # last processed hour, for night-mode crossing detection
 room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for chart
 state_events     = deque(maxlen=2000)            # list of {ts, state} — badge transitions today
 _prev_badge_cls  = None                          # last recorded badge cls for transition detection
@@ -127,12 +131,25 @@ def _make_status_sentence() -> str:
             return "Temperature is fine. Tuning up and down where needed."
 
     elif controller.state == "RUNNING":
+        if controller.night_limit_reached():
+            return "No heating anymore! Tomorrow's forecast is great."
         if controller.temp_above_upper_band():
             return "Heating the floor a little."
         elif controller.temp_below_lower_band():
             return f"Heating right now! Been at it for {controller.elapsed()/60:.0f} min."
         else:
             return "Heating a little to keep it nice and cosy."
+
+
+def _activate_night_mode(outdoor_t: float | None) -> None:
+    c = weather.cache or {}
+    with state_lock:
+        controller.start_night_mode(
+            outdoor_temp=outdoor_t,
+            forecast_low=c.get('forecast_low'),
+            forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
+            room_temp=current_temp,
+        )
 
 
 def _tick():
@@ -142,9 +159,27 @@ def _tick():
     Ebus I/O happens outside state_lock (blocking calls routed through the
     asyncio loop); control logic and state updates happen inside it.
     """
+    global _last_hour
+
     # Ebus reads outside the lock (blocking I/O) — always read so we can detect
     # OFF (circuit flow) and WATER (DHW valve) from any state.
     telemetry = ebus.read_telemetry()
+
+    # Night mode hour-crossing detection. Runs every tick (every 60 s), which
+    # is precise enough for an overnight schedule. telemetry.outdoor_temp is
+    # passed directly so no separate global is needed.
+    _hour = datetime.now(_TZ).hour
+    if _last_hour is None:
+        # First tick — activate immediately if already inside the night window.
+        if _hour >= 22 or _hour < 7:
+            _activate_night_mode(telemetry.outdoor_temp)
+    elif _hour != _last_hour:
+        if _hour == 22:
+            _activate_night_mode(telemetry.outdoor_temp)
+        elif _hour == 7:
+            with state_lock:
+                controller.end_night_mode()
+    _last_hour = _hour
 
     with state_lock:
         if current_temp is not None:
@@ -178,6 +213,7 @@ def _background_refresh():
     """
     last_weather  = 0.0
     last_tick     = 0.0
+
     while True:
         now = time.time()
         if now - last_weather >= weather.INTERVAL:
