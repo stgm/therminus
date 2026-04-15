@@ -147,13 +147,6 @@ function applyState(msg) {
   }
 }
 
-function updateNextWrite() {
-  if (!lastWriteTime) return;
-  const remaining = Math.max(0, app_update_interval - (Date.now() - lastWriteTime) / 1000);
-  document.getElementById('info-next').textContent = remaining > 0 ? Math.ceil(remaining) + 's' : 'now';
-}
-setInterval(updateNextWrite, 1000);
-
 // ── SSE ───────────────────────────────────────────────────────────────────────
 let es;
 let lastSseMessage = Date.now();

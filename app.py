@@ -196,6 +196,7 @@ def _tick():
             "status_sentence": sentence,
             "badge": badge,
             "state_event": event,
+            "last_write": datetime.now().time().isoformat(timespec="minutes"),
         }))
 
 
