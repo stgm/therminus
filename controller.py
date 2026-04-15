@@ -223,18 +223,18 @@ class HeatPumpController:
 
     def start_night_mode(self,
                          outdoor_temp: float | None,
-                         forecast_low: float | None,
+                         forecast_low_tomorrow: float | None,
                          forecast_high_tomorrow: float | None,
                          room_temp: float | None) -> None:
         """
         Activate the overnight heating limiter. Called once around 22:00.
 
         Calculates the allowed heating hours from the formula:
-            A = 16 - AVERAGE(outdoor_temp, forecast_low, forecast_high_tomorrow)
+            A = 16 - AVERAGE(outdoor_temp, forecast_low_tomorrow, forecast_high_tomorrow)
             B = 23 - room_temp
             limit = max(0, A × B)  hours
         """
-        temps = [t for t in (outdoor_temp, forecast_low, forecast_high_tomorrow)
+        temps = [t for t in (outdoor_temp, forecast_low_tomorrow, forecast_high_tomorrow)
                  if t is not None]
         avg   = sum(temps) / len(temps) if temps else 8.0
         rt    = room_temp if room_temp is not None else 21.0
@@ -245,7 +245,7 @@ class HeatPumpController:
         self.night_limit_hours = limit
         self.night_run_seconds = 0.0
         print(f"[controller] night mode:"
-              f"  outdoor={outdoor_temp} low={forecast_low} high_tom={forecast_high_tomorrow}"
+              f"  outdoor={outdoor_temp} low={forecast_low_tomorrow} high_tom={forecast_high_tomorrow}"
               f"  avg={avg:.1f} room={rt:.1f} A={A:.1f} B={B:.1f}"
               f"  limit={limit:.1f}h")
 
