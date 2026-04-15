@@ -85,10 +85,12 @@ def fetch(on_update=None) -> None:
     maxs  = daily.get('temperature_2m_max') or []
     cache = {
         'icon': icon, 'desc': desc_str, 'fetched_at': time.time(),
-        'forecast_low':           mins[1] if len(mins) > 1 else None,
+        'forecast_low_tomorrow':  mins[1] if len(mins) > 1 else None,
         'forecast_high_tomorrow': maxs[1] if len(maxs) > 1 else None,
     }
-    print(f'[weather] {icon} {desc_str}')
+    low  = cache['forecast_low_tomorrow']
+    high = cache['forecast_high_tomorrow']
+    print(f'[weather] {icon} {desc_str}  low_tomorrow={low}° high_tomorrow={high}°')
     if on_update:
         on_update(icon, desc_str)
 
