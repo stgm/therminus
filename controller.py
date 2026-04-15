@@ -256,8 +256,8 @@ class HeatPumpController:
         print("[controller] night mode: off")
 
     def night_limit_reached(self) -> bool:
-        (self.night_limit_hours is not None and
-            self.night_run_seconds >= self.night_limit_hours * 3600)
+        return (self.night_limit_hours is not None and
+                self.night_run_seconds >= self.night_limit_hours * 3600)
 
     def _transition(self, new_state: str) -> None:
         """Record a state change and log it."""
@@ -304,7 +304,7 @@ class HeatPumpController:
         )
 
         if self.night_limit_hours is not None:
-            message += " night:{self.night_run_seconds/60:.1f}/{self.night_limit_hours*60:.1f}min
+            message += f" night:{self.night_run_seconds/60:.1f}/{self.night_limit_hours*60:.1f}min"
         if self.night_limit_reached():
             message += " night:LIMIT REACHED"
         if self.is_extender_running():
