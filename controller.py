@@ -285,6 +285,11 @@ class HeatPumpController:
         return (telemetry.compressor_on()
                 and abs(telemetry.compressor_speed - COMPRESSOR_MIN_SPEED) <= COMPRESSOR_MIN_TOL)
 
+    def is_extender_running(self) -> bool:
+        """True when the run extender has raised MinFlowTemp above the baseline."""
+        return (self._desired_min_flow_temp is not None
+                and self._desired_min_flow_temp > MIN_FLOW_TEMP)
+
     def _set_active_target(self, current_temp: float, error: float) -> None:
         """Set target using the Vaillant active algorithm: mirror room error onto flow setpoint."""
         self.target = round(max(TARGET_MIN, min(TARGET_MAX, SETPOINT + KP * error)), 1)
