@@ -193,7 +193,7 @@ class HeatPumpController:
         if self._has_run_extender_data(telemetry):
             compressor_running_at_min = self._is_compressor_running_at_min(telemetry)
 
-            if (self._current_temp > SETPOINT - BAND and self.elapsed() >= 3 * 60 * 60):
+            if (self._current_temp > SETPOINT - BAND and self.elapsed() >= 1.5 * 60 * 60):
                 self._desired_min_flow_temp = MIN_FLOW_TEMP
                 print(f"[controller] run-extender stopped after 3 hours and room is good"
                       f"  min={telemetry.min_flow_temp}")
