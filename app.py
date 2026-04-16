@@ -147,6 +147,7 @@ def _activate_night_mode(outdoor_t: float | None) -> None:
             outdoor_temp=outdoor_t,
             forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
             forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
+            forecast_high_today=c.get('forecast_high_today'),
         )
 
 
@@ -179,7 +180,7 @@ def _tick():
     # Night mode activation/deactivation. Runs every tick (every 60 s), which
     # is precise enough for an overnight schedule. The flag correctly handles
     # startup inside the night window without any special-case logic.
-    _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 7
+    _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 8
     if _in_night_window and not _night_mode_active:
         _activate_night_mode(telemetry.outdoor_temp)
         _night_mode_active = True

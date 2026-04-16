@@ -27,6 +27,7 @@ State transitions (heat pump controlled):
     OFF     → IDLE       ebus: circuit_running AND not heating
 """
 
+import math
 from datetime import datetime
 
 # ── Control constants ─────────────────────────────────────────────────────────
@@ -227,32 +228,45 @@ class HeatPumpController:
     def start_night_mode(self,
                          outdoor_temp: float | None,
                          forecast_low_tomorrow: float | None,
-                         forecast_high_tomorrow: float | None) -> None:
+                         forecast_high_tomorrow: float | None,
+                         forecast_high_today: float | None) -> None:
         """
         Activate the overnight heating limiter. Called once around 22:00.
 
         Calculates the allowed heating hours from the formula:
-            A = 16 - AVERAGE(outdoor_temp, forecast_low_tomorrow, forecast_high_tomorrow)
-            B = 23 - room_temp
-            limit = max(0, A × B)  hours
+            night_loss_compensation  = 13 - (outdoor_temp + forecast_low_tomorrow) / 2
+            day_loss_precompensation = 16 - forecast_high_tomorrow
+            compensation_for_feeling = sgn(forecast_high_today - forecast_high_tomorrow)
+            room_overshoot_penalty   = 21 - room_temp
+            limit = max(0, sum of above)  hours
         """
-        temps = [t for t in (outdoor_temp, forecast_low_tomorrow, forecast_high_tomorrow)
-                 if t is not None]
-        avg   = sum(temps) / len(temps) if temps else 8.0
-        rt    = self._current_temp if self._current_temp is not None else 21.0
-        A     = 16 - avg
-        B     = 23 - rt
-        limit = max(0.0, A * B)
+        out  = outdoor_temp        if outdoor_temp        is not None else 5.0
+        low  = forecast_low_tomorrow  if forecast_low_tomorrow  is not None else 5.0
+        high = forecast_high_tomorrow if forecast_high_tomorrow is not None else 10.0
+        rt   = self._current_temp  if self._current_temp  is not None else 21.0
+
+        night_loss   = 13 - (out + low) / 2
+        day_loss     = 16 - high
+        if forecast_high_today is not None and forecast_high_tomorrow is not None:
+            diff = forecast_high_today - forecast_high_tomorrow
+            feeling = math.copysign(1.0, diff) if diff != 0 else 0.0
+        else:
+            feeling = 0.0
+        room_penalty = 21 - rt
+        limit = max(0.0, night_loss + day_loss + feeling + room_penalty)
 
         self.night_limit_hours = limit
         self.night_run_seconds = 0.0
         print(f"[controller] night mode:"
-              f"  outdoor={outdoor_temp} low={forecast_low_tomorrow} high_tom={forecast_high_tomorrow}"
-              f"  avg={avg:.1f} room={rt:.1f} A={A:.1f} B={B:.1f}"
+              f"  outdoor={outdoor_temp} low={forecast_low_tomorrow}"
+              f"  high_today={forecast_high_today} high_tom={forecast_high_tomorrow}"
+              f"  room={rt:.1f}"
+              f"  night_loss={night_loss:.1f} day_loss={day_loss:.1f}"
+              f"  feeling={feeling:.0f} room_penalty={room_penalty:.1f}"
               f"  limit={limit:.1f}h")
 
     def end_night_mode(self) -> None:
-        """Deactivate the overnight limiter. Called at 07:00."""
+        """Deactivate the overnight limiter. Called at 08:00."""
         self.night_limit_hours = None
         self.night_run_seconds = 0.0
         print("[controller] night mode: off")
