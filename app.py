@@ -152,6 +152,16 @@ def _activate_night_mode(outdoor_t: float | None) -> None:
         )
 
 
+def _dhw_scheduled_temp() -> float:
+    """Return the target DHW temperature based on time of day and weekday."""
+    now = datetime.now(_TZ)
+    if 6 <= now.hour < 14:
+        return 50.0
+    if now.hour >= 14 and now.weekday() == 4:  # Friday
+        return 60.0
+    return 55.0
+
+
 def _tick():
     """
     One control cycle. Called every CONTROL_DT seconds by _background_refresh.
@@ -179,7 +189,9 @@ def _tick():
 
     with state_lock:
         if current_temp is not None:
-            ebus.write(controller.tick(current_temp, telemetry))
+            setpoints = controller.tick(current_temp, telemetry)
+            setpoints["dhw_target"] = _dhw_scheduled_temp()
+            ebus.write(setpoints)
         sentence = _make_status_sentence()
         badge    = _make_badge()
         event    = _record_state_event(badge["cls"])

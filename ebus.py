@@ -113,6 +113,8 @@ def write(setpoints: dict) -> None:
             last_write_time = datetime.now()
         if (v := setpoints.get("min_flow_temp")) is not None:
             _run_async(_async_write("MinFlowTemp", v))
+        if (v := setpoints.get("dhw_target")) is not None:
+            _run_async(_async_write("TargetTempHwc", v))
     except Exception as e:
         print(f"[ebus] write error: {e}")
 
