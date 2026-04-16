@@ -92,6 +92,10 @@ class HeatPumpController:
     def current_temp(self):
         return self._current_temp
 
+    def update_temp(self, temp: float):
+        """Update the known room temperature without running a full tick."""
+        self._current_temp = temp
+
     def error(self):
         return SETPOINT - self._current_temp
 
@@ -104,7 +108,7 @@ class HeatPumpController:
     def temp_below_lower_band(self) -> bool:
         return self._current_temp < self._setpoint - self._band
 
-    def tick(self, current_temp: float, telemetry) -> dict:
+    def tick(self, telemetry) -> dict:
         """
         Advance the state machine one step.
 
@@ -114,11 +118,10 @@ class HeatPumpController:
         MinFlowTemp (None means no write needed).
         Returns {"room_target": float, "min_flow_temp": float | None}.
         """
-        if current_temp is None:
+        if self._current_temp is None:
             return {"room_target": None, "min_flow_temp": None}
 
         now = datetime.now()
-        self._current_temp     = current_temp
 
         # ── Phase 1: transitions ──────────────────────────────────────────────
 
@@ -174,10 +177,10 @@ class HeatPumpController:
 
         else:
             # Always set the right target room temp so the pump knows what's going on.
-            if current_temp > (SETPOINT + BAND):
+            if self._current_temp > (SETPOINT + BAND):
                 self._set_idle_target()
             else:
-                self._set_active_target(current_temp, self.error())
+                self._set_active_target(self._current_temp, self.error())
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
         # strategy: keep raising the minimum flow temp while doing the heating run
@@ -190,7 +193,7 @@ class HeatPumpController:
         if self._has_run_extender_data(telemetry):
             compressor_running_at_min = self._is_compressor_running_at_min(telemetry)
 
-            if (current_temp > SETPOINT - BAND and self.elapsed() >= 3 * 60 * 60):
+            if (self._current_temp > SETPOINT - BAND and self.elapsed() >= 3 * 60 * 60):
                 self._desired_min_flow_temp = MIN_FLOW_TEMP
                 print(f"[controller] run-extender stopped after 3 hours and room is good"
                       f"  min={telemetry.min_flow_temp}")
@@ -224,8 +227,7 @@ class HeatPumpController:
     def start_night_mode(self,
                          outdoor_temp: float | None,
                          forecast_low_tomorrow: float | None,
-                         forecast_high_tomorrow: float | None,
-                         room_temp: float | None) -> None:
+                         forecast_high_tomorrow: float | None) -> None:
         """
         Activate the overnight heating limiter. Called once around 22:00.
 
@@ -237,7 +239,7 @@ class HeatPumpController:
         temps = [t for t in (outdoor_temp, forecast_low_tomorrow, forecast_high_tomorrow)
                  if t is not None]
         avg   = sum(temps) / len(temps) if temps else 8.0
-        rt    = room_temp if room_temp is not None else 21.0
+        rt    = self._current_temp if self._current_temp is not None else 21.0
         A     = 16 - avg
         B     = 23 - rt
         limit = max(0.0, A * B)

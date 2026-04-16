@@ -35,7 +35,6 @@ HISTORY_POINTS  = 1440
 # the background control thread, and the SSE generator). All reads and writes
 # must happen under state_lock, except where explicitly noted.
 state_lock       = threading.Lock()
-current_temp     = None          # most recent room temp from sensor POST (°C)
 _night_mode_active: bool = False  # True while the overnight heating limiter is running
 room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for chart
 state_events     = deque(maxlen=2000)            # list of {ts, state} — badge transitions today
@@ -105,7 +104,7 @@ def _load_history():
 
 def _make_status_sentence() -> str:
     """Plain-language explanation of the current state. Called with state_lock held."""
-    if current_temp is None:
+    if controller.current_temp() is None:
         return "Waking up, waiting for the first temperature reading."
 
     if controller.state == "WATER":
@@ -148,7 +147,6 @@ def _activate_night_mode(outdoor_t: float | None) -> None:
             outdoor_temp=outdoor_t,
             forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
             forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
-            room_temp=current_temp,
         )
 
 
@@ -169,6 +167,9 @@ def _tick():
     Ebus I/O happens outside state_lock (blocking calls routed through the
     asyncio loop); control logic and state updates happen inside it.
     """
+    if controller.current_temp() is None:
+        return
+
     global _night_mode_active
 
     # Ebus reads outside the lock (blocking I/O) — always read so we can detect
@@ -179,7 +180,7 @@ def _tick():
     # is precise enough for an overnight schedule. The flag correctly handles
     # startup inside the night window without any special-case logic.
     _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 7
-    if _in_night_window and not _night_mode_active and current_temp is not None:
+    if _in_night_window and not _night_mode_active:
         _activate_night_mode(telemetry.outdoor_temp)
         _night_mode_active = True
     elif not _in_night_window and _night_mode_active:
@@ -188,8 +189,8 @@ def _tick():
         _night_mode_active = False
 
     with state_lock:
-        if current_temp is not None:
-            setpoints = controller.tick(current_temp, telemetry)
+        setpoints = controller.tick(telemetry)
+        if setpoints["room_target"] is not None:
             setpoints["dhw_target"] = _dhw_scheduled_temp()
             ebus.write(setpoints)
         sentence = _make_status_sentence()
@@ -197,19 +198,18 @@ def _tick():
         event    = _record_state_event(badge["cls"])
     if event:
         _save_history()
-    if current_temp is not None:
-        _broadcast(json.dumps({
-            "type": "update",
-            "ts": datetime.now().isoformat(timespec="seconds"),
-            "room_temp": current_temp,
-            "target": controller.target,
-            "state": controller.state,
-            "status": controller.debug_status(),
-            "status_sentence": sentence,
-            "badge": badge,
-            "state_event": event,
-            "last_write": datetime.now().time().isoformat(timespec="minutes"),
-        }))
+    _broadcast(json.dumps({
+        "type": "update",
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "room_temp": controller.current_temp(),
+        "target": controller.target,
+        "state": controller.state,
+        "status": controller.debug_status(),
+        "status_sentence": sentence,
+        "badge": badge,
+        "state_event": event,
+        "last_write": datetime.now().time().isoformat(timespec="minutes"),
+    }))
 
 
 def _background_refresh():
@@ -280,7 +280,6 @@ def post_roomtemp():
 
     Returns JSON {ok, ts} or {error} with a 4xx status.
     """
-    global current_temp
     raw = request.form.get("current") or (request.json or {}).get("current")
     if raw is None:
         return jsonify({"error": "missing 'current' param"}), 400
@@ -297,7 +296,7 @@ def post_roomtemp():
 
     ts = datetime.now().isoformat(timespec="seconds")
     with state_lock:
-        current_temp = value
+        controller.update_temp(value)
         room_history.append({"ts": ts, "value": value})
 
     return jsonify({"ok": True, "ts": ts})
@@ -326,7 +325,7 @@ def api_stream():
         with state_lock:
             snap = {
                 "type": "snapshot",
-                "room_temp": current_temp,
+                "room_temp": controller.current_temp(),
                 "target": controller.target,
                 "status": controller.debug_status(),
                 "state": controller.state,
