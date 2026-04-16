@@ -140,11 +140,8 @@ function applyState(msg) {
   if (msg.status)
     document.getElementById('status-text').textContent = msg.status;
 
-  if (msg.last_write) {
-    lastWriteTime = new Date(msg.last_write.replace('T',' '));
-    document.getElementById('info-write').textContent =
-      lastWriteTime.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
-  }
+  if (msg.last_write)
+    document.getElementById('info-write').textContent = msg.last_write;
 }
 
 // ── SSE ───────────────────────────────────────────────────────────────────────
