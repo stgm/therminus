@@ -5,7 +5,7 @@ Receives sensor and ebus readings via tick(); updates internal state and
 computes a target setpoint. No I/O, no Flask dependencies.
 
 Public attributes (read by app.py):
-    state         "IDLE" | "RUNNING" | "RESTING" | "WATER" | "OFF"
+    state         "IDLE" | "RUNNING" | "RESTING" | "HOLDOFF" | "WATER" | "OFF"
     target        setpoint (°C) to write to the pump after the last tick
 
 Private attributes:
@@ -23,8 +23,9 @@ State transitions (heat pump controlled):
     *       → WATER      ebus: compressor > 0 AND valve == warm water circuit
     WATER   → IDLE       DHW ended AND 10-min after-run wait elapsed
     *       → OFF        ebus: building_circuit_flow == 0 (not from WATER)
-    OFF     → RUNNING    ebus: circuit_running AND heating
-    OFF     → IDLE       ebus: circuit_running AND not heating
+    OFF     → HOLDOFF    ebus: circuit_running (pump waking up)
+    HOLDOFF → RUNNING    heating starts during hold
+    HOLDOFF → IDLE       5-min timer elapsed
 """
 
 import math
@@ -59,6 +60,12 @@ WATER_AFTER_RUN_WAIT = 10 * 60  # seconds (10 min)
 # Far enough below any real room temperature that the pump will not run its
 # compressor for space heating.
 IDLE_TEMP    = 15.0   # °C
+
+# Written to the pump during OFF and the 5-minute HOLDOFF after it wakes up.
+# Keeps the pump's internal control in a clear "needs heat" reference so it
+# starts the next cycle from a known state rather than near-neutral.
+HOLDOFF_TEMP = 10.0   # °C
+T_HOLDOFF    = 5 * 60 # seconds (5 min)
 
 # Run extender: keeps the pump running by nudging MinFlowTemp upward when the
 # compressor is at minimum modulation but the flow temperature still overshoots
@@ -144,8 +151,13 @@ class HeatPumpController:
         elif self.state == "OFF":
             if telemetry.circuit_running():
                 # WATER is handled by the first branch above (making_dhw() fires first).
-                # Distinguish between a real heating run and an idle restart.
-                self._transition("RUNNING" if telemetry.heating() else "IDLE")
+                self._transition("HOLDOFF")
+
+        elif self.state == "HOLDOFF":
+            if telemetry.heating():
+                self._transition("RUNNING")
+            elif self.elapsed() >= T_HOLDOFF:
+                self._transition("IDLE")
 
         # Remaining states: IDLE, RUNNING, RESTING
         elif telemetry.circuit_off():
@@ -171,6 +183,9 @@ class HeatPumpController:
             print(f"[controller] night limit reached"
                     f"  total={self.night_run_seconds/3600:.2f}h"
                     f"  limit={self.night_limit_hours:.1f}h")
+
+        elif self.state in ("OFF", "HOLDOFF"):
+            self.target = HOLDOFF_TEMP
 
         elif self.state == "RESTING":
             # Suppress the pump while the floor distributes heat.

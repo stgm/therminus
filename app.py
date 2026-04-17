@@ -113,6 +113,9 @@ def _make_status_sentence() -> str:
     elif controller.state == "OFF":
         return "Outside seems warm enough so everything's off."
 
+    elif controller.state == "HOLDOFF":
+        return "Outside is getting colder, pump is starting up."
+
     elif controller.state == "RESTING":
         if controller.temp_above_upper_band():
             return "Giving the floor a rest, it's warm enough!"
