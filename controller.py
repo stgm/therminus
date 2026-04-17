@@ -64,7 +64,7 @@ IDLE_TEMP    = 15.0   # °C
 # Written to the pump during OFF and the 5-minute HOLDOFF after it wakes up.
 # Keeps the pump's internal control in a clear "needs heat" reference so it
 # starts the next cycle from a known state rather than near-neutral.
-HOLDOFF_TEMP = 10.0   # °C
+HOLDOFF_TEMP = 15.0   # °C
 T_HOLDOFF    = 5 * 60 # seconds (5 min)
 
 # Run extender: keeps the pump running by nudging MinFlowTemp upward when the
