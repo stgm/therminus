@@ -34,7 +34,10 @@ Basic state transitions for this controller:
 """
 
 import math
+import zoneinfo
 from datetime import datetime
+
+_TZ = zoneinfo.ZoneInfo("Europe/Amsterdam")
 
 # ── Control constants ─────────────────────────────────────────────────────────
 
@@ -315,9 +318,21 @@ class HeatPumpController:
         self.night_run_seconds = 0.0
         print("[controller] night mode: off")
 
+    def night_mode_active(self) -> bool:
+        return self.night_limit_hours is not None
+
     def night_limit_reached(self) -> bool:
         return (self.night_limit_hours is not None and
                 self.night_run_seconds >= self.night_limit_hours * 3600)
+
+    def dhw_scheduled_temp(self) -> float:
+        """Return the target DHW temperature based on time of day and weekday."""
+        now = datetime.now(_TZ)
+        if 6 <= now.hour < 14:
+            return 45.0
+        if now.hour >= 14 and now.weekday() == 4:  # Friday
+            return 60.0
+        return 50.0
 
     def _transition(self, new_state: str) -> None:
         """Record a state change and log it."""

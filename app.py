@@ -35,7 +35,6 @@ HISTORY_POINTS  = 1440
 # the background control thread, and the SSE generator). All reads and writes
 # must happen under state_lock, except where explicitly noted.
 state_lock       = threading.Lock()
-_night_mode_active: bool = False  # True while the overnight heating limiter is running
 room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for chart
 state_events     = deque(maxlen=2000)            # list of {ts, state} — badge transitions today
 _prev_badge_cls  = None                          # last recorded badge cls for transition detection
@@ -162,16 +161,6 @@ def _activate_night_mode(outdoor_t: float | None) -> None:
         )
 
 
-def _dhw_scheduled_temp() -> float:
-    """Return the target DHW temperature based on time of day and weekday."""
-    now = datetime.now(_TZ)
-    if 6 <= now.hour < 14:
-        return 45.0
-    if now.hour >= 14 and now.weekday() == 4:  # Friday
-        return 60.0
-    return 50.0
-
-
 def _tick():
     """
     One control cycle. Called every CONTROL_DT seconds by _background_refresh.
@@ -182,27 +171,23 @@ def _tick():
     if controller.current_temp() is None:
         return
 
-    global _night_mode_active
-
     # Ebus reads outside the lock (blocking I/O).
     telemetry = ebus.read_telemetry()
 
     # Night mode activation/deactivation. Runs every tick (every 60 s), which
-    # is precise enough for an overnight schedule. The flag correctly handles
-    # startup inside the night window without any special-case logic.
+    # is precise enough for an overnight schedule. Correctly handles startup
+    # inside the night window without any special-case logic.
     _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 8
-    if _in_night_window and not _night_mode_active:
+    if _in_night_window and not controller.night_mode_active():
         _activate_night_mode(telemetry.outdoor_temp)
-        _night_mode_active = True
-    elif not _in_night_window and _night_mode_active:
+    elif not _in_night_window and controller.night_mode_active():
         with state_lock:
             controller.end_night_mode()
-        _night_mode_active = False
 
     with state_lock:
         setpoints = controller.tick(telemetry)
         if setpoints["room_target"] is not None:
-            setpoints["dhw_target"] = _dhw_scheduled_temp()
+            setpoints["dhw_target"] = controller.dhw_scheduled_temp()
             ebus.write(setpoints)
         sentence = _make_status_sentence()
         badge    = _make_badge()
