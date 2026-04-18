@@ -158,10 +158,10 @@ def _dhw_scheduled_temp() -> float:
     """Return the target DHW temperature based on time of day and weekday."""
     now = datetime.now(_TZ)
     if 6 <= now.hour < 14:
-        return 50.0
+        return 45.0
     if now.hour >= 14 and now.weekday() == 4:  # Friday
         return 60.0
-    return 55.0
+    return 50.0
 
 
 def _tick():
