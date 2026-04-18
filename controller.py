@@ -1,31 +1,36 @@
 """
-HeatPumpController — pure state machine for Therminus.
+HeatPumpController — dual state machine for Therminus.
 
 Receives sensor and ebus readings via tick(); updates internal state and
 computes a target setpoint. No I/O, no Flask dependencies.
 
+  Heat pump states  (from telemetry):
+      dhw          compressor on + DHW valve
+      dormant      building circuit flow == 0
+      heating      compressor on + heating valve
+      circulating  circuit running, compressor off
+
+  Controller states:
+      DHW        pump actively making hot water
+      DHW_WAIT   DHW just ended; 10-min after-run settling
+      SUPPRESSED we told the pump to stay off (target=10 °C); dormant is expected
+      IDLE       ready; waiting for pump to start heating
+      RUNNING    pump is heating; we are managing the run
+      RESTING    compressor just stopped; floor distributing; mandatory 60-min pause
+
 Public attributes (read by app.py):
-    state         "IDLE" | "RUNNING" | "RESTING" | "HOLDOFF" | "WATER" | "OFF"
+    state         one of the six controller states above
     target        setpoint (°C) to write to the pump after the last tick
 
-Private attributes:
-    _t_min_rest   seconds the current RESTING period must last
-    _state_since  datetime when the current state was entered
-    _setpoint     desired room temperature (°C)
-    _band         deadband half-width (°C)
-
-State transitions (our logic):
-    RESTING → IDLE       rest timer elapsed
-    IDLE    → RUNNING    ebus: compressor > 0 AND valve == heating circuit
-    RUNNING → RESTING    ebus: compressor == 0
-
-State transitions (heat pump controlled):
-    *       → WATER      ebus: compressor > 0 AND valve == warm water circuit
-    WATER   → IDLE       DHW ended AND 10-min after-run wait elapsed
-    *       → OFF        ebus: building_circuit_flow == 0 (not from WATER)
-    OFF     → HOLDOFF    ebus: circuit_running (pump waking up)
-    HOLDOFF → RUNNING    heating starts during hold
-    HOLDOFF → IDLE       5-min timer elapsed
+Basic state transitions for this controller:
+    *          → DHW        pump state == dhw  (from any non-DHW state)
+    DHW        → DHW_WAIT   pump state != dhw  (DHW just finished; 10-min timer starts)
+    DHW_WAIT   → IDLE       10-min timer elapsed
+    IDLE       → SUPPRESSED room > SETPOINT+BAND AND outdoor > SUPPRESS_OUTDOOR_MIN
+    SUPPRESSED → IDLE       conditions no longer met (room cooled OR outdoor dropped)
+    IDLE       → RUNNING    pump state == heating
+    RUNNING    → RESTING    pump state != heating
+    RESTING    → IDLE       60-min rest timer elapsed
 """
 
 import math
@@ -52,20 +57,21 @@ TARGET_MAX   = 24.0   # °C — safety ceiling; never request above this
 # Gives the floor time to distribute heat before the next cycle.
 T_MIN_REST   = 60 * 60   # seconds (60 min)
 
-# After DHW ends, wait this long before leaving WATER state.
+# After DHW ends, wait this long before leaving DHW_WAIT state.
 # Prevents mistaking a post-DHW after-run on the heating circuit for a new heating cycle.
-WATER_AFTER_RUN_WAIT = 10 * 60  # seconds (10 min)
+DHW_AFTER_RUN_WAIT = 10 * 60  # seconds (10 min)
 
-# Written to the pump during RESTING (and when IDLE with room above band).
+# Written to the pump during RESTING (and when IDLE/RUNNING with room above band).
 # Far enough below any real room temperature that the pump will not run its
 # compressor for space heating.
 IDLE_TEMP    = 15.0   # °C
 
-# Written to the pump during OFF and the 5-minute HOLDOFF after it wakes up.
-# Keeps the pump's internal control in a clear "needs heat" reference so it
-# starts the next cycle from a known state rather than near-neutral.
-HOLDOFF_TEMP = 15.0   # °C
-T_HOLDOFF    = 5 * 60 # seconds (5 min)
+# Written to the pump during SUPPRESSED state.
+# Low enough to ensure the circulation pump stops entirely.
+SUPPRESSED_TEMP      = 10.0   # °C
+
+# Outdoor temperature above which SUPPRESSED mode activates (room warm + mild outside).
+SUPPRESS_OUTDOOR_MIN = 16.0   # °C
 
 # Run extender: keeps the pump running by nudging MinFlowTemp upward when the
 # compressor is at minimum modulation but the flow temperature still overshoots
@@ -75,10 +81,28 @@ COMPRESSOR_MIN_SPEED = 30.0   # % — minimum modulation speed (pump cannot go l
 COMPRESSOR_MIN_TOL   =  1.0   # % — tolerance band around minimum modulation
 
 
+def _pump_state(telemetry) -> str:
+    """
+    Derive the current pump hardware state from telemetry — no history, no side effects.
+
+    Priority order ensures unambiguous classification:
+      dhw          compressor on + DHW valve (takes priority over all)
+      dormant      building circuit flow == 0
+      heating      compressor on + heating valve
+      circulating  circuit running, compressor off
+    """
+    if telemetry.making_dhw():      return "dhw"
+    if telemetry.circuit_off():     return "dormant"
+    if telemetry.heating():         return "heating"
+    if telemetry.circuit_running(): return "circulating"
+    return "dormant"                # telemetry not yet available
+
+
 class HeatPumpController:
     def __init__(self):
         # Public — readable by app.py
         self.state       = "IDLE"
+        self.pump        = "dormant"   # last known pump state: dhw|dormant|heating|circulating
         self.target      = IDLE_TEMP
 
         # Private
@@ -95,7 +119,6 @@ class HeatPumpController:
         # Last known sensor values — used by debug_status()
         self._current_temp     = None
         self._compressor_speed = None
-        self._water_ended_at: datetime | None = None  # when DHW last stopped (for after-run wait)
 
     def current_temp(self):
         return self._current_temp
@@ -116,6 +139,13 @@ class HeatPumpController:
     def temp_below_lower_band(self) -> bool:
         return self._current_temp < self._setpoint - self._band
 
+    def should_suppress(self) -> bool:
+        return (
+            telemetry.outdoor_temp is not None
+            and telemetry.outdoor_temp > SUPPRESS_OUTDOOR_MIN
+            and self._current_temp > (SETPOINT + BAND)
+        )
+
     def tick(self, telemetry) -> dict:
         """
         Advance the state machine one step.
@@ -129,73 +159,72 @@ class HeatPumpController:
         if self._current_temp is None:
             return {"room_target": None, "min_flow_temp": None}
 
-        now = datetime.now()
+        self.pump = pump = _pump_state(telemetry)
 
         # ── Phase 1: transitions ──────────────────────────────────────────────
 
-        # Enter WATER from any non-WATER state (heat pump started making DHW)
-        if self.state != "WATER" and telemetry.making_dhw():
-            self._transition("WATER")
-            self._water_ended_at = None
+        # DHW wins from any non-DHW/DHW_WAIT state.
+        if pump == "dhw":
+            self._transition("DHW")
 
-        elif self.state == "WATER":
-            if telemetry.making_dhw():
-                self._water_ended_at = None  # still active, reset exit timer
-            else:
-                if self._water_ended_at is None:
-                    self._water_ended_at = now
-                elif (now - self._water_ended_at).total_seconds() >= WATER_AFTER_RUN_WAIT:
-                    self._transition("IDLE")
-                    self._water_ended_at = None
+        elif self.state == "DHW":
+            if pump != "dhw":
+                # DHW just stopped — move immediately to after-run settling.
+                # elapsed() will measure from this transition onwards.
+                self._transition("DHW_WAIT")
 
-        elif self.state == "OFF":
-            if telemetry.circuit_running():
-                # WATER is handled by the first branch above (making_dhw() fires first).
-                self._transition("HOLDOFF")
-
-        elif self.state == "HOLDOFF":
-            if telemetry.heating():
-                self._transition("RUNNING")
-            elif self.elapsed() >= T_HOLDOFF:
+        elif self.state == "DHW_WAIT":
+            if self.elapsed() >= DHW_AFTER_RUN_WAIT:
                 self._transition("IDLE")
 
-        # Remaining states: IDLE, RUNNING, RESTING
-        elif telemetry.circuit_off():
-            self._transition("OFF")
+        elif self.state == "SUPPRESSED":
+            if not self.should_suppress():
+                self._transition("IDLE")
 
         elif self.state == "RESTING":
             if self.elapsed() >= self._t_min_rest:
                 self._transition("IDLE")
 
         elif self.state == "IDLE":
-            if telemetry.heating():
+            if self.should_suppress():
+                self._transition("SUPPRESSED")
+            elif pump == "heating":
                 self._transition("RUNNING")
 
         elif self.state == "RUNNING":
-            if telemetry.compressor_off():
+            if pump != "heating":
                 self._t_min_rest = T_MIN_REST
                 self._transition("RESTING")
 
-        # ── Phase 2: compute room target───────────────────────────────────────
+        # ── Phase 2: compute room target ──────────────────────────────────────
 
+        # keep artificially low when heating limit is reached during the night
+        # this is for colder nights and warmer days, it's fine to have it a bit
+        # colder during the mornings
         if self.night_limit_reached():
             self._set_idle_target()
             print(f"[controller] night limit reached"
                     f"  total={self.night_run_seconds/3600:.2f}h"
                     f"  limit={self.night_limit_hours:.1f}h")
 
-        elif self.state in ("OFF", "HOLDOFF"):
-            self.target = HOLDOFF_TEMP
-
+        # keep the target artificially low for some time after a run, to force a pause
         elif self.state == "RESTING":
-            # Suppress the pump while the floor distributes heat.
             self._set_idle_target()
 
+        # if it's too hot inside and outside we turn off by setting the target room to 10ºC
+        elif self.state == "SUPPRESSED":
+            self.target = SUPPRESSED_TEMP
+
+        # regulate a little based on room temperature: the heat pump combines
+        # with outside temp and heat curve to calculate required flow temp
         else:
-            # Always set the right target room temp so the pump knows what's going on.
             if self._current_temp > (SETPOINT + BAND):
+                # Room satisfied — keep target low so pump won't fire compressor.
+                # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
+                # before the compressor stops naturally.
                 self._set_idle_target()
             else:
+                # track room temperature using the "active" strategy
                 self._set_active_target(self._current_temp, self.error())
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
@@ -292,6 +321,7 @@ class HeatPumpController:
 
     def _transition(self, new_state: str) -> None:
         """Record a state change and log it."""
+        if self.state == new_state: return
         print(f"[controller] {self.state} → {new_state}")
         if self.state == "RUNNING" and new_state != "RUNNING":
             self._accumulate_run()

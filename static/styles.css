@@ -30,6 +30,8 @@
 #action-badge.resting { color: var(--resting); }
 #action-badge.dhw     { color: var(--accent); }
 #action-badge.idle    { color: rgba(255,255,255,.6); }
+#action-badge.off        { color: var(--text-dim); }
+#action-badge.suppressed { color: var(--warn); }
 
 * {
     box-sizing: border-box;

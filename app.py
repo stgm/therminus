@@ -48,15 +48,20 @@ controller = HeatPumpController()
 
 def _make_badge() -> dict:
     """Badge label and CSS class for the current state. Called with state_lock held."""
-    if controller.state == "WATER":
-        return {"label": "Loading hot water", "cls": "dhw", "active": False}
-    if controller.state == "OFF":
-        return {"label": "Off", "cls": "off", "active": False}
+    if controller.state == "DHW":
+        return {"label": "Water",           "cls": "dhw",        "active": False}
+    if controller.state == "DHW_WAIT":
+        return {"label": "Water settling",  "cls": "dhw",        "active": False}
+    if controller.state == "SUPPRESSED":
+        return {"label": "Suppressed",      "cls": "suppressed", "active": False}
     if controller.state == "RUNNING":
-        return {"label": "Heating", "cls": "heating", "active": True}
+        return {"label": "Heating",         "cls": "heating",    "active": True}
     if controller.state == "RESTING":
-        return {"label": "Resting", "cls": "resting", "active": False}
-    return {"label": "Idle", "cls": "idle", "active": False}
+        return {"label": "Resting",         "cls": "resting",    "active": False}
+    # IDLE — distinguish between pump dormant (heat pump shut itself off) and circulating
+    if controller.pump == "dormant":
+        return {"label": "Off",             "cls": "off",        "active": False}
+    return     {"label": "Idle",            "cls": "idle",       "active": False}
 
 
 def _record_state_event(badge_cls: str) -> dict | None:
@@ -107,14 +112,17 @@ def _make_status_sentence() -> str:
     if controller.current_temp() is None:
         return "Waking up, waiting for the first temperature reading."
 
-    if controller.state == "WATER":
-        return f"Casually loading the hot water tank."
+    if controller.state == "DHW":
+        return "Casually loading the hot water tank."
 
-    elif controller.state == "OFF":
-        return "Outside seems warm enough so everything's off."
+    elif controller.state == "DHW_WAIT":
+        return "Hot water's done, letting things settle before heating."
 
-    elif controller.state == "HOLDOFF":
-        return "Outside is getting colder, pump is starting up."
+    elif controller.state == "SUPPRESSED":
+        return "Pretty warm inside, so the heating is taking a break."
+
+    elif controller.state == "IDLE" and controller.pump == "dormant":
+        return "Outside is warm enough, no heating!"
 
     elif controller.state == "RESTING":
         if controller.temp_above_upper_band():
@@ -176,8 +184,7 @@ def _tick():
 
     global _night_mode_active
 
-    # Ebus reads outside the lock (blocking I/O) — always read so we can detect
-    # OFF (circuit flow) and WATER (DHW valve) from any state.
+    # Ebus reads outside the lock (blocking I/O).
     telemetry = ebus.read_telemetry()
 
     # Night mode activation/deactivation. Runs every tick (every 60 s), which
