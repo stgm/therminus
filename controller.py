@@ -148,7 +148,7 @@ class HeatPumpController:
             and self._current_temp > (SETPOINT + BAND)
         )
 
-    def tick(self, telemetry) -> dict:
+    def tick(self, telemetry, weather_cache: dict | None = None) -> dict:
         """
         Advance the state machine one step.
 
@@ -160,6 +160,20 @@ class HeatPumpController:
         """
         if self._current_temp is None:
             return {"room_target": None, "min_flow_temp": None}
+
+        # Night window: 22:00–08:00. Runs every tick so startup inside the
+        # window is handled correctly without special-case logic.
+        _in_night_window = ebus.now().hour >= 22 or ebus.now().hour < 8
+        if _in_night_window and not self.night_mode_active():
+            c = weather_cache or {}
+            self.start_night_mode(
+                outdoor_temp=telemetry.outdoor_temp,
+                forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
+                forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
+                forecast_high_today=c.get('forecast_high_today'),
+            )
+        elif not _in_night_window and self.night_mode_active():
+            self.end_night_mode()
 
         self.pump = pump = _pump_state(telemetry)
 

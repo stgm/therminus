@@ -47,29 +47,9 @@ def _tick():
     # Ebus reads outside the lock (blocking I/O).
     telemetry = ebus.read_telemetry()
 
-    # Night mode activation/deactivation. Runs every tick (every 60 s), which
-    # is precise enough for an overnight schedule. Correctly handles startup
-    # inside the night window without any special-case logic.
-    _in_night_window = ebus.now().hour >= 22 or ebus.now().hour < 8
-    if _in_night_window and not controller.night_mode_active():
-        c = weather.cache or {}
-        with state_lock:
-            controller.start_night_mode(
-                outdoor_temp=telemetry.outdoor_temp,
-                forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
-                forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
-                forecast_high_today=c.get('forecast_high_today'),
-            )
-        _activate_night_mode()
-    elif not _in_night_window and controller.night_mode_active():
-        with state_lock:
-            controller.end_night_mode()
-
     with state_lock:
-        setpoints = controller.tick(telemetry)
-        if setpoints["room_target"] is not None:
-            setpoints["dhw_target"] = controller.dhw_scheduled_temp()
-            ebus.write(setpoints)
+        setpoints = controller.tick(telemetry, weather_cache=weather.cache)
+        ebus.write(setpoints)
         sentence = presenter.status_sentence(controller)
         badge    = presenter.badge(controller)
         event    = history.record_state_event(badge["cls"])
