@@ -1,7 +1,8 @@
 import json
 from collections import deque
-from datetime import datetime
 from pathlib import Path
+
+import ebus
 
 
 class DayHistory:
@@ -23,14 +24,14 @@ class DayHistory:
         if badge_cls == self._prev_badge_cls:
             return None
         self._prev_badge_cls = badge_cls
-        event = {"ts": datetime.now().isoformat(timespec="seconds"), "state": badge_cls}
+        event = {"ts": ebus.now().isoformat(timespec="seconds"), "state": badge_cls}
         self.state_events.append(event)
         return event
 
     def save(self) -> None:
         try:
             self.history_file.write_text(json.dumps({
-                "date": datetime.now().strftime("%Y-%m-%d"),
+                "date": ebus.now().strftime("%Y-%m-%d"),
                 "room_history": list(self.room_history),
                 "state_events": list(self.state_events),
             }))
@@ -40,7 +41,7 @@ class DayHistory:
     def load(self) -> None:
         try:
             data = json.loads(self.history_file.read_text())
-            if data.get("date") != datetime.now().strftime("%Y-%m-%d"):
+            if data.get("date") != ebus.now().strftime("%Y-%m-%d"):
                 return
             for p in data.get("room_history", []):
                 self.room_history.append(p)

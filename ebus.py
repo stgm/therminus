@@ -4,14 +4,21 @@ ebus — ebusd communication layer for Therminus.
 All pyebus I/O lives here. The rest of the app calls the public functions
 and reads the public attributes; it never touches pyebus directly.
 
+Also owns wall-clock time for the app: sync_time() reads the pump's
+DCF77-synced clock once at startup and infers the UTC offset; now()
+returns a tz-aware datetime in that inferred zone.
+
 Public functions:
     start()                   launch the asyncio loop thread (call once at startup)
+    sync_time()               read DCF time once, infer tz from it (call after start())
+    now()                     current wall-clock as a tz-aware datetime
     read_telemetry()          blocking read of pump telemetry; returns Telemetry
     write(setpoints)          write pump setpoints from a dict; None values are skipped
 
 Public attributes:
     last_target               last room_target value successfully written (°C), or None
     last_write_time           datetime of last successful write, or None
+    time_synced               True once sync_time() has succeeded
 """
 
 # Three-way valve position strings as reported by ebusd.
@@ -20,8 +27,9 @@ VALVE_DHW     = 'warm water circuit'
 
 import asyncio
 import threading
+import zoneinfo
 from dataclasses import dataclass, field, fields as dc_fields
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 EBUSD_HOST      = "127.0.0.1"
@@ -31,8 +39,10 @@ EBUSD_CIRCUIT   = "hmu"      # ebusd circuit that owns all heat pump messages
 # ── Module state ───────────────────────────────────────────────────────────────
 _loop           = None
 _ebus           = None    # shared Ebus instance, initialized on first use
+_tz             = zoneinfo.ZoneInfo("Europe/Amsterdam")  # replaced by sync_time()
 last_target     = None    # last TargetTempHc value successfully written (°C)
 last_write_time = None    # datetime of last successful write
+time_synced     = False   # True once sync_time() has succeeded
 
 
 @dataclass
@@ -86,6 +96,55 @@ def start() -> None:
     threading.Thread(target=_run_loop, daemon=True).start()
 
 
+def now() -> datetime:
+    """Current wall-clock time as a tz-aware datetime.
+
+    Timezone is inferred from the pump's DCF clock at startup via
+    sync_time(); falls back to Europe/Amsterdam if that read never
+    succeeded.
+    """
+    return datetime.now(_tz)
+
+
+def sync_time() -> bool:
+    """Read DCF time from vwzio/OutsideReceiver once and set the module tz.
+
+    Computes offset_hours = round((DCF wall-clock) - (system UTC)), in
+    hours, and uses that fixed offset as the app-wide timezone. Returns
+    True on success; on any failure logs the reason and leaves the
+    fallback tz in place.
+    """
+    global _tz, time_synced
+    try:
+        fields = _run_async(_async_read_outside_receiver())
+    except Exception as e:
+        print(f"[ebus] time sync read error: {e}")
+        return False
+    if not fields:
+        print("[ebus] time sync: OutsideReceiver read failed")
+        return False
+    state = str(fields.get('dcfstate', '')).strip()
+    if state not in ('ok', 'valid'):
+        print(f"[ebus] DCF not valid ({state or 'unknown'}); "
+              f"falling back to Europe/Amsterdam")
+        return False
+    bdate = str(fields.get('bdate', '')).strip()
+    btime = str(fields.get('btime', '')).strip()
+    try:
+        dcf = datetime.strptime(f"{bdate} {btime}", "%Y-%m-%d %H:%M:%S")
+    except ValueError as e:
+        print(f"[ebus] DCF parse error: {e}  date={bdate!r} time={btime!r}")
+        return False
+    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
+    offset_hours = round((dcf - utc_now).total_seconds() / 3600)
+    _tz = timezone(timedelta(hours=offset_hours))
+    time_synced = True
+    sign = '+' if offset_hours >= 0 else '-'
+    print(f"[ebus] time synced: dcf={dcf.isoformat(sep=' ')} "
+          f"tz={sign}{abs(offset_hours):02d}:00")
+    return True
+
+
 def read_telemetry() -> Telemetry:
     """
     Read pump telemetry from ebusd synchronously.
@@ -110,7 +169,7 @@ def write(setpoints: dict) -> None:
         if (v := setpoints.get("room_target")) is not None:
             _run_async(_async_write("TargetTempHc", v))
             last_target     = v
-            last_write_time = datetime.now()
+            last_write_time = now()
         if (v := setpoints.get("min_flow_temp")) is not None:
             _run_async(_async_write("MinFlowTemp", v))
         if (v := setpoints.get("dhw_target")) is not None:
@@ -154,6 +213,33 @@ async def _async_write(msgdef_name: str, value: float) -> None:
         return
     await ebus.async_write(msgdef, value)
     print(f"[ebus] wrote {EBUSD_CIRCUIT}/{msgdef_name} = {value}")
+
+
+async def _async_read_outside_receiver() -> dict | None:
+    """Read vwzio/OutsideReceiver — a single multi-field message.
+
+    Returns a {field_name: raw_value} dict, or None on failure. Unlike
+    Telemetry reads (one ebus message per field), this message carries
+    dcfstate, btime, bdate, and temp as sibling fields of one message.
+    """
+    ebus = await _get_ebus()
+    msgdef = ebus.msgdefs.get("vwzio", "OutsideReceiver")
+    if msgdef is None:
+        print("[ebus] vwzio/OutsideReceiver msgdef not found")
+        return None
+    msg = await ebus.async_read(msgdef)
+    if msg is None:
+        return None
+    result: dict = {}
+    try:
+        for idx, fielddef in enumerate(msgdef.fields):
+            name = getattr(fielddef, 'name', None)
+            if name:
+                result[name] = msg.values[idx]
+    except (AttributeError, IndexError) as e:
+        print(f"[ebus] OutsideReceiver field decode error: {e}")
+        return None
+    return result
 
 
 async def _async_read_telemetry() -> Telemetry:

@@ -10,10 +10,7 @@ import threading
 import json
 import re
 import time
-import zoneinfo
-from datetime import datetime, timedelta
 
-_TZ = zoneinfo.ZoneInfo("Europe/Amsterdam")
 from flask import Flask, Response, render_template, jsonify, request
 from controller import HeatPumpController
 from history import DayHistory
@@ -53,7 +50,7 @@ def _tick():
     # Night mode activation/deactivation. Runs every tick (every 60 s), which
     # is precise enough for an overnight schedule. Correctly handles startup
     # inside the night window without any special-case logic.
-    _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 8
+    _in_night_window = ebus.now().hour >= 22 or ebus.now().hour < 8
     if _in_night_window and not controller.night_mode_active():
         c = weather.cache or {}
         with state_lock:
@@ -80,7 +77,7 @@ def _tick():
         history.save()
     _broadcast(json.dumps({
         "type": "update",
-        "ts": datetime.now().isoformat(timespec="seconds"),
+        "ts": ebus.now().isoformat(timespec="seconds"),
         "room_temp": controller.current_temp(),
         "target": controller.target,
         "state": controller.state,
@@ -88,7 +85,7 @@ def _tick():
         "status_sentence": sentence,
         "badge": badge,
         "state_event": event,
-        "last_write": datetime.now().time().isoformat(timespec="minutes"),
+        "last_write": ebus.now().time().isoformat(timespec="minutes"),
     }))
 
 
@@ -174,7 +171,7 @@ def post_roomtemp():
     if not (5.0 <= value <= 35.0):
         return jsonify({"error": f"value {value} out of bounds [5, 35]"}), 400
 
-    ts = datetime.now().isoformat(timespec="seconds")
+    ts = ebus.now().isoformat(timespec="seconds")
     with state_lock:
         controller.update_temp(value)
         history.append_room_temp(ts, value)
@@ -247,5 +244,6 @@ if __name__ == "__main__":
 
     history.load()
     ebus.start()
+    ebus.sync_time()
     threading.Thread(target=_background_refresh, daemon=True).start()
     app.run(host="0.0.0.0", port=6790, debug=False, threaded=True)

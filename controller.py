@@ -34,10 +34,9 @@ Basic state transitions for this controller:
 """
 
 import math
-import zoneinfo
-from datetime import datetime
+import time
 
-_TZ = zoneinfo.ZoneInfo("Europe/Amsterdam")
+import ebus
 
 # ── Control constants ─────────────────────────────────────────────────────────
 
@@ -111,7 +110,7 @@ class HeatPumpController:
         # Private
         self._setpoint    = SETPOINT
         self._band        = BAND
-        self._state_since = datetime.now()
+        self._state_since = time.monotonic_ns()
         self._t_min_rest  = T_MIN_REST
         self._desired_min_flow_temp: float | None = None  # None = no write needed
 
@@ -133,8 +132,8 @@ class HeatPumpController:
     def error(self):
         return SETPOINT - self._current_temp
 
-    def elapsed(self) -> int:
-        return (datetime.now() - self._state_since).total_seconds()
+    def elapsed(self) -> float:
+        return (time.monotonic_ns() - self._state_since) / 1e9
 
     def temp_above_upper_band(self) -> bool:
         return self._current_temp > self._setpoint + self._band
@@ -327,7 +326,7 @@ class HeatPumpController:
 
     def dhw_scheduled_temp(self) -> float:
         """Return the target DHW temperature based on time of day and weekday."""
-        now = datetime.now(_TZ)
+        now = ebus.now()
         if 6 <= now.hour < 14:
             return 45.0
         if now.hour >= 14 and now.weekday() == 4:  # Friday
@@ -341,7 +340,7 @@ class HeatPumpController:
         if self.state == "RUNNING" and new_state != "RUNNING":
             self._accumulate_run()
         self.state       = new_state
-        self._state_since = datetime.now()
+        self._state_since = time.monotonic_ns()
 
     def _accumulate_run(self) -> None:
         """Called in tick() just before transitioning away from RUNNING.
