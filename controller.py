@@ -159,7 +159,7 @@ class HeatPumpController:
         Returns {"room_target": float, "min_flow_temp": float | None}.
         """
         if self._current_temp is None:
-            return {"room_target": None, "min_flow_temp": None}
+            return {}
 
         # Night window: 22:00–08:00. Runs every tick so startup inside the
         # window is handled correctly without special-case logic.
@@ -249,7 +249,11 @@ class HeatPumpController:
         # make sure extender stops when room temp reached
         if self.state != "RUNNING":
             self._desired_min_flow_temp = MIN_FLOW_TEMP
-            return {"room_target": self.target, "min_flow_temp": self._desired_min_flow_temp}
+            return {
+                "room_target": self.target,
+                "min_flow_temp": self._desired_min_flow_temp,
+                "dhw_target": controller.dhw_scheduled_temp()
+            }
 
         if self._has_run_extender_data(telemetry):
             compressor_running_at_min = self._is_compressor_running_at_min(telemetry)
@@ -283,7 +287,11 @@ class HeatPumpController:
                       f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
                       f"  comp={telemetry.compressor_speed}%")
 
-        return {"room_target": self.target, "min_flow_temp": self._desired_min_flow_temp}
+        return {
+            "room_target": self.target,
+            "min_flow_temp": self._desired_min_flow_temp,
+            "dhw_target": controller.dhw_scheduled_temp()
+        }
 
     def start_night_mode(self,
                          outdoor_temp: float | None,
