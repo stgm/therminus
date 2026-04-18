@@ -118,9 +118,8 @@ class HeatPumpController:
         self.night_limit_hours: float | None = None  # None = not in night mode
         self.night_run_seconds: float = 0.0          # accumulated RUNNING time tonight
 
-        # Last known sensor values — used by debug_status()
+        # Last known sensor value
         self._current_temp     = None
-        self._compressor_speed = None
 
     def current_temp(self):
         return self._current_temp
@@ -394,22 +393,3 @@ class HeatPumpController:
     def _set_idle_target(self) -> None:
         """Set target to idle temp — low enough that the pump will not run its compressor."""
         self.target = IDLE_TEMP
-
-    def debug_status(self) -> str:
-        """Internal debug status string. Not for display — use for logging/back panel."""
-        if self._current_temp is None:
-            return "INACTIVE waiting for first room temperature"
-
-        message = (
-            f"{self.state}: "
-            f"{self.elapsed()/60:.0f}min"
-        )
-
-        if self.night_limit_hours is not None:
-            message += f" night:{self.night_run_seconds/60:.1f}/{self.night_limit_hours*60:.1f}min"
-        if self.night_limit_reached():
-            message += " night:LIMIT REACHED"
-        if self.is_extender_running():
-            message += " extending run!"
-
-        return message

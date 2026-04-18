@@ -61,3 +61,23 @@ def status_sentence(controller: HeatPumpController) -> str:
             return f"Heating right now! Been at it for {controller.elapsed()/60:.0f} min."
         else:
             return "Heating a little to keep it nice and cosy."
+
+
+def debug_status(controller: HeatPumpController) -> str:
+    """Internal debug status string. Not for display — use for logging/back panel."""
+    if controller.current_temp() is None:
+        return "INACTIVE waiting for first room temperature"
+
+    message = (
+        f"{controller.state}: "
+        f"{controller.elapsed()/60:.0f}min"
+    )
+
+    if controller.night_limit_hours is not None:
+        message += f" night:{controller.night_run_seconds/60:.1f}/{controller.night_limit_hours*60:.1f}min"
+    if controller.night_limit_reached():
+        message += " night:LIMIT REACHED"
+    if controller.is_extender_running():
+        message += " extending run!"
+
+    return message
