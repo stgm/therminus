@@ -34,6 +34,9 @@ sse_clients = []             # list of queue.Queue, one per connected browser
 # ── State machine ──────────────────────────────────────────────────────────────
 controller = HeatPumpController()
 
+
+# ── Control logic ──────────────────────────────────────────────────────────────
+
 def _tick():
     """
     One control cycle. Called every CONTROL_DT seconds by _background_refresh.
@@ -48,10 +51,14 @@ def _tick():
     telemetry = ebus.read_telemetry()
 
     with state_lock:
+        # run the controller
         setpoints = controller.tick(telemetry, weather_cache=weather.cache)
+        # write new target values to ebus
         ebus.write(setpoints)
+        # generate UI content
         sentence = presenter.status_sentence(controller)
         badge    = presenter.badge(controller)
+        # add to history log
         event    = history.record_state_event(badge["cls"])
     if event:
         history.save()
@@ -93,10 +100,8 @@ def _background_refresh():
         time.sleep(10)
 
 
-# ── Control logic ──────────────────────────────────────────────────────────────
-
-
 # ── SSE broadcast ──────────────────────────────────────────────────────────────
+
 def _broadcast(payload: str):
     """
     Push a JSON string to all connected SSE clients.
@@ -212,6 +217,7 @@ def api_stream():
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     # import argparse
     # parser = argparse.ArgumentParser(description="Therminus heat pump controller")
