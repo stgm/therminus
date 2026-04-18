@@ -252,7 +252,7 @@ class HeatPumpController:
             return {
                 "room_target": self.target,
                 "min_flow_temp": self._desired_min_flow_temp,
-                "dhw_target": controller.dhw_scheduled_temp()
+                "dhw_target": self.dhw_scheduled_temp()
             }
 
         if self._has_run_extender_data(telemetry):
@@ -290,7 +290,7 @@ class HeatPumpController:
         return {
             "room_target": self.target,
             "min_flow_temp": self._desired_min_flow_temp,
-            "dhw_target": controller.dhw_scheduled_temp()
+            "dhw_target": self.dhw_scheduled_temp()
         }
 
     def start_night_mode(self,
