@@ -142,7 +142,7 @@ class HeatPumpController:
     def temp_below_lower_band(self) -> bool:
         return self._current_temp < self._setpoint - self._band
 
-    def should_suppress(self) -> bool:
+    def should_suppress(self, telemetry) -> bool:
         return (
             telemetry.outdoor_temp is not None
             and telemetry.outdoor_temp > SUPPRESS_OUTDOOR_MIN
@@ -189,7 +189,7 @@ class HeatPumpController:
                 self._transition("IDLE")
 
         elif self.state == "IDLE":
-            if self.should_suppress():
+            if self.should_suppress(telemetry):
                 self._transition("SUPPRESSED")
             elif pump == "heating":
                 self._transition("RUNNING")
