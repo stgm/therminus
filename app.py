@@ -12,12 +12,11 @@ import re
 import time
 import zoneinfo
 from datetime import datetime, timedelta
-from collections import deque
 
 _TZ = zoneinfo.ZoneInfo("Europe/Amsterdam")
-from pathlib import Path
 from flask import Flask, Response, render_template, jsonify, request
 from controller import HeatPumpController
+from history import DayHistory
 import ebus
 import weather
 import presenter
@@ -27,78 +26,16 @@ app = Flask(__name__)
 # ── Configuration ─────────────────────────────────────────────────────────────
 CONTROL_DT = 60   # seconds — how often the control loop runs
 
-# Number of room-temp readings to keep in memory for the history chart.
-# At one reading per ~5 minutes, 1440 points covers roughly 5 days.
-HISTORY_POINTS  = 1440
-
 # ── Shared state ──────────────────────────────────────────────────────────────
 # All variables below are accessed from multiple threads (Flask request handlers,
 # the background control thread, and the SSE generator). All reads and writes
 # must happen under state_lock, except where explicitly noted.
-state_lock       = threading.Lock()
-room_history     = deque(maxlen=HISTORY_POINTS)  # list of {ts, value} dicts for chart
-state_events     = deque(maxlen=2000)            # list of {ts, state} — badge transitions today
-_prev_badge_cls  = None                          # last recorded badge cls for transition detection
-HISTORY_FILE     = Path("history.json")
-sse_clients   = []    # list of queue.Queue, one per connected browser
+state_lock  = threading.Lock()
+history     = DayHistory()   # owns room_history, state_events, _prev_badge_cls
+sse_clients = []             # list of queue.Queue, one per connected browser
 
 # ── State machine ──────────────────────────────────────────────────────────────
 controller = HeatPumpController()
-
-
-def _record_state_event(badge_cls: str) -> dict | None:
-    """Append a state event if the badge class changed. Returns the new event or None."""
-    global _prev_badge_cls
-    if badge_cls == _prev_badge_cls:
-        return None
-    _prev_badge_cls = badge_cls
-    event = {"ts": datetime.now().isoformat(timespec="seconds"), "state": badge_cls}
-    state_events.append(event)
-    return event
-
-
-def _save_history():
-    """Persist today's room_history and state_events to disk."""
-    try:
-        HISTORY_FILE.write_text(json.dumps({
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "room_history": list(room_history),
-            "state_events": list(state_events),
-        }))
-    except Exception as e:
-        print(f"[therminus] history save error: {e}")
-
-
-def _load_history():
-    """Load today's history from disk on startup. Silently ignores missing/stale file."""
-    global _prev_badge_cls
-    try:
-        data = json.loads(HISTORY_FILE.read_text())
-        if data.get("date") != datetime.now().strftime("%Y-%m-%d"):
-            return
-        for p in data.get("room_history", []):
-            room_history.append(p)
-        for e in data.get("state_events", []):
-            state_events.append(e)
-        if state_events:
-            _prev_badge_cls = state_events[-1]["state"]
-        print(f"[therminus] loaded history: {len(room_history)} temp points, {len(state_events)} state events")
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"[therminus] history load error: {e}")
-
-
-def _activate_night_mode(outdoor_t: float | None) -> None:
-    c = weather.cache or {}
-    with state_lock:
-        controller.start_night_mode(
-            outdoor_temp=outdoor_t,
-            forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
-            forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
-            forecast_high_today=c.get('forecast_high_today'),
-        )
-
 
 def _tick():
     """
@@ -118,7 +55,15 @@ def _tick():
     # inside the night window without any special-case logic.
     _in_night_window = datetime.now(_TZ).hour >= 22 or datetime.now(_TZ).hour < 8
     if _in_night_window and not controller.night_mode_active():
-        _activate_night_mode(telemetry.outdoor_temp)
+        c = weather.cache or {}
+        with state_lock:
+            controller.start_night_mode(
+                outdoor_temp=telemetry.outdoor_temp,
+                forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
+                forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
+                forecast_high_today=c.get('forecast_high_today'),
+            )
+        _activate_night_mode()
     elif not _in_night_window and controller.night_mode_active():
         with state_lock:
             controller.end_night_mode()
@@ -130,9 +75,9 @@ def _tick():
             ebus.write(setpoints)
         sentence = presenter.status_sentence(controller)
         badge    = presenter.badge(controller)
-        event    = _record_state_event(badge["cls"])
+        event    = history.record_state_event(badge["cls"])
     if event:
-        _save_history()
+        history.save()
     _broadcast(json.dumps({
         "type": "update",
         "ts": datetime.now().isoformat(timespec="seconds"),
@@ -232,7 +177,7 @@ def post_roomtemp():
     ts = datetime.now().isoformat(timespec="seconds")
     with state_lock:
         controller.update_temp(value)
-        room_history.append({"ts": ts, "value": value})
+        history.append_room_temp(ts, value)
 
     return jsonify({"ok": True, "ts": ts})
 
@@ -266,8 +211,8 @@ def api_stream():
                 "state": controller.state,
                 "status_sentence": presenter.status_sentence(controller),
                 "badge": presenter.badge(controller),
-                "history": list(room_history),
-                "state_events": list(state_events),
+                "history": list(history.room_history),
+                "state_events": list(history.state_events),
                 "weather": weather.cache,
             }
         yield f"data: {json.dumps(snap)}\n\n"
@@ -300,7 +245,7 @@ if __name__ == "__main__":
     # )
     # args = parser.parse_args()
 
-    _load_history()
+    history.load()
     ebus.start()
     threading.Thread(target=_background_refresh, daemon=True).start()
     app.run(host="0.0.0.0", port=6790, debug=False, threaded=True)
