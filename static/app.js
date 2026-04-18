@@ -21,8 +21,10 @@ const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Satur
 function updateClock() {
   const now = new Date();
   document.getElementById('day-label').textContent = DAYS[now.getDay()];
-  document.getElementById('time-label').textContent =
-    now.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+  const time = now.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+  const split_time = time.split(':');
+  document.getElementById('time-label-hours').textContent = split_time[0];
+  document.getElementById('time-label-minutes').textContent = split_time[1];
 }
 updateClock();
 setInterval(updateClock, 10000);

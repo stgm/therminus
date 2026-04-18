@@ -182,6 +182,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    align-items: center;
 }
 .day-label {
     font-size: 17px;
@@ -190,6 +191,7 @@ body {
     text-transform: uppercase;
     color: #fff;
     text-shadow: 1px 1px 0 #000;
+    margin-right: -0.15em; /* optical centering with the degree symbol */
 }
 .time-label {
     font-family: var(--mono);
@@ -208,8 +210,7 @@ body {
     right: 22px;
     display: flex;
     flex-direction: column;
-    align-items: flex-end;
-    /*gap: 3px;*/
+    align-items: center;
 }
 .weather-icon {
     font-size: 60px;
@@ -223,6 +224,7 @@ body {
     letter-spacing: 0.04em;
     text-align: right;
     text-shadow: 1px 1px 0 #000;
+    margin-right: -0.5em; /* optical centering with the degree symbol */
 }
 
 /* Centre: temperature + state badge */
