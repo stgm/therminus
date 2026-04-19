@@ -234,7 +234,7 @@ class HeatPumpController:
             if self.should_suppress(telemetry):
                 print("[room target calculation] suppressing 10º")
                 self.target = SUPPRESSED_TEMP
-            if self._current_temp > (SETPOINT + BAND):
+            elif self._current_temp > (SETPOINT + BAND):
                 # Room satisfied — keep target low so pump won't fire compressor.
                 # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
                 # before the compressor stops naturally.
