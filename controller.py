@@ -231,7 +231,7 @@ class HeatPumpController:
         # regulate a little based on room temperature: the heat pump combines
         # with outside temp and heat curve to calculate required flow temp
         else:
-            if self.should_suppress():
+            if self.should_suppress(telemetry):
                 self.target = SUPPRESSED_TEMP
             if self._current_temp > (SETPOINT + BAND):
                 # Room satisfied — keep target low so pump won't fire compressor.
