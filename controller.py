@@ -192,18 +192,16 @@ class HeatPumpController:
             if self.elapsed() >= DHW_AFTER_RUN_WAIT:
                 self._transition("IDLE")
 
-        elif self.state == "SUPPRESSED":
-            if not self.should_suppress():
-                self._transition("IDLE")
+        # elif self.state == "SUPPRESSED":
+        #     if not self.should_suppress():
+        #         self._transition("IDLE")
 
         elif self.state == "RESTING":
             if self.elapsed() >= self._t_min_rest:
                 self._transition("IDLE")
 
         elif self.state == "IDLE":
-            if self.should_suppress(telemetry):
-                self._transition("SUPPRESSED")
-            elif pump == "heating":
+            if pump == "heating":
                 self._transition("RUNNING")
 
         elif self.state == "RUNNING":
@@ -226,13 +224,15 @@ class HeatPumpController:
         elif self.state == "RESTING":
             self._set_idle_target()
 
-        # if it's too hot inside and outside we turn off by setting the target room to 10ºC
-        elif self.state == "SUPPRESSED":
-            self.target = SUPPRESSED_TEMP
+        # # if it's too hot inside and outside we turn off by setting the target room to 10ºC
+        # elif self.state == "SUPPRESSED":
+        #     self.target = SUPPRESSED_TEMP
 
         # regulate a little based on room temperature: the heat pump combines
         # with outside temp and heat curve to calculate required flow temp
         else:
+            if self.should_suppress():
+                self.target = SUPPRESSED_TEMP
             if self._current_temp > (SETPOINT + BAND):
                 # Room satisfied — keep target low so pump won't fire compressor.
                 # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
