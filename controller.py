@@ -73,7 +73,7 @@ IDLE_TEMP    = 15.0   # °C
 SUPPRESSED_TEMP      = 10.0   # °C
 
 # Outdoor temperature above which SUPPRESSED mode activates (room warm + mild outside).
-SUPPRESS_OUTDOOR_MIN = 16.0   # °C
+SUPPRESS_OUTDOOR_MIN = 10.0   # °C
 
 # Run extender: keeps the pump running by nudging MinFlowTemp upward when the
 # compressor is at minimum modulation but the flow temperature still overshoots
