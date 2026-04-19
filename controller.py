@@ -232,17 +232,17 @@ class HeatPumpController:
         # with outside temp and heat curve to calculate required flow temp
         else:
             if self.should_suppress(telemetry):
-                printf("[room target calculation] suppressing 10º")
+                print("[room target calculation] suppressing 10º")
                 self.target = SUPPRESSED_TEMP
             if self._current_temp > (SETPOINT + BAND):
                 # Room satisfied — keep target low so pump won't fire compressor.
                 # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
                 # before the compressor stops naturally.
-                printf("[room target calculation] idle 15º")
+                print("[room target calculation] idle 15º")
                 self._set_idle_target()
             else:
                 # track room temperature using the "active" strategy
-                printf("[room target calculation] active strategy")
+                print("[room target calculation] active strategy")
                 self._set_active_target(self._current_temp, self.error())
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
