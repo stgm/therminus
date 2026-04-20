@@ -112,6 +112,7 @@ class HeatPumpController:
         self._band        = BAND
         self._state_since = time.monotonic_ns()
         self._t_min_rest  = T_MIN_REST
+        self._extender_is_running = False
 
         # Night limiter (22:00–07:00)
         self.night_limit_hours: float | None = None  # None = not in night mode
@@ -248,6 +249,7 @@ class HeatPumpController:
         # Extender can only run when RUNNING, so ensure low
         # minimum flow temp otherwise
         if self.state != "RUNNING":
+            self._extender_is_running = False
             return {
                 "room_target": self.target,
                 "min_flow_temp": MIN_FLOW_TEMP,
@@ -281,6 +283,7 @@ class HeatPumpController:
                       f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
                       f"  comp={telemetry.compressor_speed}%")
 
+        self._extender_is_running = telemetry.min_flow_temp > MIN_FLOW_TEMP
         return {
             "room_target": self.target,
             "min_flow_temp": desired_min_flow_temp,
@@ -378,8 +381,7 @@ class HeatPumpController:
 
     def is_extender_running(self) -> bool:
         """True when the run extender has raised MinFlowTemp above the baseline."""
-        return (telemetry.min_flow_temp is not None
-                and telemetry.min_flow_temp > MIN_FLOW_TEMP)
+        return _extender_is_running
 
     def _set_active_target(self, current_temp: float, error: float) -> None:
         """Set target using the Vaillant active algorithm: mirror room error onto flow setpoint."""
