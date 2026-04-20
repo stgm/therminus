@@ -284,7 +284,8 @@ class HeatPumpController:
                       f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
                       f"  comp={telemetry.compressor_speed}%")
 
-            elif (telemetry.flow_temp < telemetry.target_flow_temp):
+            elif (telemetry.flow_temp < telemetry.target_flow_temp
+                  and not self._is_compressor_running_at_min(telemetry)):
                 desired_min_flow_temp = telemetry.flow_temp
                 print(f"[extender] toning down")
 
