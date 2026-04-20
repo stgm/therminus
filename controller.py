@@ -13,7 +13,6 @@ computes a target setpoint. No I/O, no Flask dependencies.
   Controller states:
       DHW        pump actively making hot water
       DHW_WAIT   DHW just ended; 10-min after-run settling
-      SUPPRESSED we told the pump to stay off (target=10 °C); dormant is expected
       IDLE       ready; waiting for pump to start heating
       RUNNING    pump is heating; we are managing the run
       RESTING    compressor just stopped; floor distributing; mandatory 60-min pause
@@ -26,8 +25,6 @@ Basic state transitions for this controller:
     *          → DHW        pump state == dhw  (from any non-DHW state)
     DHW        → DHW_WAIT   pump state != dhw  (DHW just finished; 10-min timer starts)
     DHW_WAIT   → IDLE       10-min timer elapsed
-    IDLE       → SUPPRESSED room > SETPOINT+BAND AND outdoor > SUPPRESS_OUTDOOR_MIN
-    SUPPRESSED → IDLE       conditions no longer met (room cooled OR outdoor dropped)
     IDLE       → RUNNING    pump state == heating
     RUNNING    → RESTING    pump state != heating
     RESTING    → IDLE       60-min rest timer elapsed
@@ -176,21 +173,26 @@ class HeatPumpController:
 
         # ── Phase 1: transitions ──────────────────────────────────────────────
 
-        # DHW wins from any non-DHW/DHW_WAIT state.
         if pump == "dhw":
+            # DHW wins from any non-DHW/DHW_WAIT state.
             self._transition("DHW")
 
         elif self.state == "DHW":
             if pump != "dhw":
-                # DHW just stopped — move immediately to after-run settling.
-                # elapsed() will measure from this transition onwards.
+                # DHW just stopped. In this case we move to DHW_WAIT, which
+                # makes sure that we do not turn off the cirulation immediately.
+                # Instead, we let the remaining hot water from the piping
+                # distribute in the heating system for 10 minutes.
                 self._transition("DHW_WAIT")
 
         elif self.state == "DHW_WAIT":
+            # normal temperature management, except it will never be set
+            # such that the circulation turns off
             if self.elapsed() >= DHW_AFTER_RUN_WAIT:
                 self._transition("IDLE")
 
         elif self.state == "RESTING":
+            # disallows heating for some time after a run
             if self.elapsed() >= self._t_min_rest:
                 self._transition("IDLE")
 
@@ -218,14 +220,10 @@ class HeatPumpController:
         elif self.state == "RESTING":
             self._set_idle_target()
 
-        # # if it's too hot inside and outside we turn off by setting the target room to 10ºC
-        # elif self.state == "SUPPRESSED":
-        #     self.target = SUPPRESSED_TEMP
-
         # regulate a little based on room temperature: the heat pump combines
         # with outside temp and heat curve to calculate required flow temp
         else:
-            if self.should_suppress(telemetry) and self.state != "DHW" and self.state != "DHW_WAIT":
+            if self.should_suppress(telemetry) and self.state not in ["DHW", "DHW_WAIT"]:
                 print("[room target calculation] suppressing 10º")
                 self.target = SUPPRESSED_TEMP
             elif self._current_temp > (SETPOINT + BAND):
@@ -240,10 +238,24 @@ class HeatPumpController:
                 self._set_active_target(self._current_temp, self.error())
 
         # ── Phase 3: run extender ─────────────────────────────────────────────
-        # strategy: keep raising the minimum flow temp while doing the heating run
+        #
+        # When the pump is RUNNING, it may settle on lowest compressor speed,
+        # especially in spring and fall when there's not a lot of heat loss
+        # and/or there's a lot of heat from the sun.
+        #
+        # The pump may turn off quite quickly because the flow temperature
+        # soon rises above the heat curve flow temperature: the minimum
+        # compressor speed is already too much. But in a slow heating system
+        # the water then cools quite quickly again. Worst case, the pump
+        # starts cycling multiple times per hour.
+        #
+        # We can encourage the pump to keep going by following the flow
+        # temperature and trying to keep that as a target. This is done by
+        # raising the *minimum* flow temperature variable. In practice, this
+        # results in very long runs where the energy-integral hardly rises.
 
-        # Extender can only run when RUNNING, so ensure low
-        # minimum flow temp otherwise
+        # Extender can only run when RUNNING, in all other states we remove
+        # the raised minimum and set the minimum to a safe default (15ºC).
         if self.state != "RUNNING":
             self._extender_is_running = False
             return {
@@ -252,6 +264,7 @@ class HeatPumpController:
                 "dhw_target": self.dhw_scheduled_temp()
             }
 
+        # Track the flow temperature carefully:
         desired_min_flow_temp = None
         if self._has_run_extender_data(telemetry):
             # Make sure extender stops when room temp reached

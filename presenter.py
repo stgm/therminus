@@ -28,7 +28,7 @@ def status_sentence(controller: HeatPumpController) -> str:
         return "Casually loading the hot water tank."
 
     elif controller.state == "DHW_WAIT":
-        return "Hot water's done, letting things settle before heating."
+        return "Hot water's done, letting things settle."
 
     elif controller.state == "SUPPRESSED":
         return "Pretty warm inside, so the heating is taking a break."
