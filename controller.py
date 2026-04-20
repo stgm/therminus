@@ -101,9 +101,9 @@ def _pump_state(telemetry) -> str:
 
 
 class HeatPumpController:
-    def __init__(self):
+    def __init__(self, initial_state: str | None = None):
         # Public — readable by app.py
-        self.state       = "IDLE"
+        self.state       = initial_state if initial_state is not None else "IDLE"
         self.pump        = "dormant"   # last known pump state: dhw|dormant|heating|circulating
         self.target      = IDLE_TEMP
 

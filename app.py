@@ -219,14 +219,21 @@ def api_stream():
 # ── Startup ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # import argparse
-    # parser = argparse.ArgumentParser(description="Therminus heat pump controller")
-    # parser.add_argument(
-    #     "--initial-rest", type=int, default=None, metavar="MINUTES",
-    #     help="Override the initial resting period in minutes (default: 60). "
-    #          "Use 0 to start immediately."
-    # )
-    # args = parser.parse_args()
+    import argparse
+
+    _VALID_STATES = ["DHW", "DHW_WAIT", "SUPPRESSED", "IDLE", "RUNNING", "RESTING"]
+    parser = argparse.ArgumentParser(description="Therminus heat pump controller")
+    parser.add_argument(
+        "-i", "--initial-state",
+        choices=_VALID_STATES,
+        default=None,
+        metavar="STATE",
+        help=f"Override the initial controller state. One of: {', '.join(_VALID_STATES)}. Default: IDLE.",
+    )
+    args = parser.parse_args()
+
+    if args.initial_state is not None:
+        controller = HeatPumpController(initial_state=args.initial_state)
 
     history.load()
     ebus.start()
