@@ -142,8 +142,7 @@ def sync_time() -> bool:
     _tz = timezone(timedelta(hours=offset_hours))
     time_synced = True
     sign = '+' if offset_hours >= 0 else '-'
-    print(f"[ebus] time synced: dcf={dcf.isoformat(sep=' ')} "
-          f"tz={sign}{abs(offset_hours):02d}:00")
+    print(f"[ebus] determined timezone {sign}{abs(offset_hours):02d} hours")
     return True
 
 
