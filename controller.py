@@ -69,6 +69,11 @@ IDLE_TEMP    = 15.0   # °C
 # Low enough to ensure the circulation pump stops entirely.
 SUPPRESSED_TEMP      = 10.0   # °C
 
+# During suppress, briefly raise to IDLE_TEMP once per cycle so the
+# circulation pump can run without the compressor firing.
+SUPPRESS_CYCLE         = 60 * 60   # seconds — full suppress cycle length
+SUPPRESS_CIRC_DURATION =  5 * 60   # seconds — circulation burst per cycle
+
 # Outdoor temperature above which SUPPRESSED mode activates (room warm + mild outside).
 SUPPRESS_OUTDOOR_MIN = 10.0   # °C
 
@@ -224,8 +229,13 @@ class HeatPumpController:
         # with outside temp and heat curve to calculate required flow temp
         else:
             if self.should_suppress(telemetry) and self.state not in ["DHW", "DHW_WAIT"]:
-                print("[room target calculation] suppressing 10º")
-                self.target = SUPPRESSED_TEMP
+                cycle_pos = self.elapsed() % SUPPRESS_CYCLE
+                if cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION:
+                    print("[room target calculation] suppress circulation burst 15º")
+                    self.target = IDLE_TEMP
+                else:
+                    print("[room target calculation] suppressing 10º")
+                    self.target = SUPPRESSED_TEMP
             elif self._current_temp > (SETPOINT + BAND):
                 # Room satisfied — keep target low so pump won't fire compressor.
                 # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
