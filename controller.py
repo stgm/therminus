@@ -112,7 +112,6 @@ class HeatPumpController:
         self._band        = BAND
         self._state_since = time.monotonic_ns()
         self._t_min_rest  = T_MIN_REST
-        self._desired_min_flow_temp: float | None = None  # None = no write needed
 
         # Night limiter (22:00–07:00)
         self.night_limit_hours: float | None = None  # None = not in night mode
@@ -153,8 +152,6 @@ class HeatPumpController:
 
         Reads current conditions; may transition state; always updates
         self.target with the setpoint the pump should receive this tick.
-        Sets self._desired_min_flow_temp when the run extender wants to write
-        MinFlowTemp (None means no write needed).
         Returns {"room_target": float, "min_flow_temp": float | None}.
         """
         if self._current_temp is None:
@@ -251,10 +248,9 @@ class HeatPumpController:
         # Extender can only run when RUNNING, so ensure low
         # minimum flow temp otherwise
         if self.state != "RUNNING":
-            self._desired_min_flow_temp = MIN_FLOW_TEMP
             return {
                 "room_target": self.target,
-                "min_flow_temp": self._desired_min_flow_temp,
+                "min_flow_temp": MIN_FLOW_TEMP,
                 "dhw_target": self.dhw_scheduled_temp()
             }
 
@@ -262,7 +258,7 @@ class HeatPumpController:
             # Make sure extender stops when room temp reached
             # Although the heat pump can still decide to continue!
             if (self._current_temp >= SETPOINT and self.elapsed() >= 1.5 * 60 * 60):
-                self._desired_min_flow_temp = MIN_FLOW_TEMP
+                desired_min_flow_temp = MIN_FLOW_TEMP
                 print(f"[controller] run-extender stopped after {self.elapsed()/3600.0} hours and room is good"
                       f"  min={telemetry.min_flow_temp}")
 
@@ -270,7 +266,7 @@ class HeatPumpController:
             # We raised the minimum, but heat is no longer requested above it
             elif (telemetry.target_flow_temp < telemetry.min_flow_temp
                   and telemetry.min_flow_temp > MIN_FLOW_TEMP):
-                self._desired_min_flow_temp = MIN_FLOW_TEMP
+                desired_min_flow_temp = MIN_FLOW_TEMP
                 print(f"[controller] run-extender: reset (no longer needed)"
                       f"  target={telemetry.target_flow_temp}  min={telemetry.min_flow_temp}")
 
@@ -280,14 +276,14 @@ class HeatPumpController:
                   and self._is_compressor_running_at_min(telemetry)
                   and telemetry.flow_temp < telemetry.max_flow_temp
                   and telemetry.target_flow_temp >= MIN_FLOW_TEMP):
-                self._desired_min_flow_temp = telemetry.flow_temp
+                desired_min_flow_temp = telemetry.flow_temp
                 print(f"[controller] run-extender: extend"
                       f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
                       f"  comp={telemetry.compressor_speed}%")
 
         return {
             "room_target": self.target,
-            "min_flow_temp": self._desired_min_flow_temp,
+            "min_flow_temp": desired_min_flow_temp,
             "dhw_target": self.dhw_scheduled_temp()
         }
 
@@ -382,8 +378,8 @@ class HeatPumpController:
 
     def is_extender_running(self) -> bool:
         """True when the run extender has raised MinFlowTemp above the baseline."""
-        return (self._desired_min_flow_temp is not None
-                and self._desired_min_flow_temp > MIN_FLOW_TEMP)
+        return (telemetry.min_flow_temp is not None
+                and telemetry.min_flow_temp > MIN_FLOW_TEMP)
 
     def _set_active_target(self, current_temp: float, error: float) -> None:
         """Set target using the Vaillant active algorithm: mirror room error onto flow setpoint."""
