@@ -93,7 +93,9 @@ class Telemetry:
 
 def start() -> None:
     """Launch the dedicated asyncio event loop in a daemon thread."""
-    threading.Thread(target=_run_loop, daemon=True).start()
+    ready = threading.Event()
+    threading.Thread(target=_run_loop, args=(ready,), daemon=True).start()
+    ready.wait()
 
 
 def now() -> datetime:
@@ -180,10 +182,12 @@ def write(setpoints: dict) -> None:
 
 # ── Internals ──────────────────────────────────────────────────────────────────
 
-def _run_loop() -> None:
+def _run_loop(ready: threading.Event | None = None) -> None:
     global _loop
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
+    if ready:
+        ready.set()
     _loop.run_forever()
 
 
