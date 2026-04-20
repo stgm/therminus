@@ -248,7 +248,8 @@ class HeatPumpController:
         # ── Phase 3: run extender ─────────────────────────────────────────────
         # strategy: keep raising the minimum flow temp while doing the heating run
 
-        # make sure extender stops when room temp reached
+        # Extender can only run when RUNNING, so ensure low
+        # minimum flow temp otherwise
         if self.state != "RUNNING":
             self._desired_min_flow_temp = MIN_FLOW_TEMP
             return {
@@ -258,32 +259,27 @@ class HeatPumpController:
             }
 
         if self._has_run_extender_data(telemetry):
-            compressor_running_at_min = self._is_compressor_running_at_min(telemetry)
-
-            if (self._current_temp > SETPOINT - BAND and self.elapsed() >= 1.5 * 60 * 60):
+            # Make sure extender stops when room temp reached
+            # Although the heat pump can still decide to continue!
+            if (self._current_temp >= SETPOINT and self.elapsed() >= 1.5 * 60 * 60):
                 self._desired_min_flow_temp = MIN_FLOW_TEMP
-                print(f"[controller] run-extender stopped after 3 hours and room is good"
+                print(f"[controller] run-extender stopped after {self.elapsed()/3600.0} hours and room is good"
                       f"  min={telemetry.min_flow_temp}")
 
-            elif telemetry.min_flow_temp < MIN_FLOW_TEMP:
-                # Pump minimum dropped below our baseline — restore it.
-                self._desired_min_flow_temp = MIN_FLOW_TEMP
-                print(f"[controller] run-extender: reset (min below baseline)"
-                      f"  min={telemetry.min_flow_temp}")
-
+            # Target flow calculated by heat pump drops below the set min flow temp
+            # We raised the minimum, but heat is no longer requested above it
             elif (telemetry.target_flow_temp < telemetry.min_flow_temp
                   and telemetry.min_flow_temp > MIN_FLOW_TEMP):
-                # Target flow calculated by heat pump drops below the set min flow temp
-                # We raised the minimum, but heat is no longer requested above it.
                 self._desired_min_flow_temp = MIN_FLOW_TEMP
                 print(f"[controller] run-extender: reset (no longer needed)"
                       f"  target={telemetry.target_flow_temp}  min={telemetry.min_flow_temp}")
 
+            # Actual flow overshoots target at minimum modulation — extend the run.
             elif (telemetry.flow_temp > telemetry.target_flow_temp
-                  and compressor_running_at_min
+                  and self.elapsed() > 20 * 60 # 20 minutes
+                  and self._is_compressor_running_at_min(telemetry)
                   and telemetry.flow_temp < telemetry.max_flow_temp
                   and telemetry.target_flow_temp >= MIN_FLOW_TEMP):
-                # Actual flow overshoots target at minimum modulation — extend the run.
                 self._desired_min_flow_temp = telemetry.flow_temp
                 print(f"[controller] run-extender: extend"
                       f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
