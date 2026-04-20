@@ -228,7 +228,7 @@ class HeatPumpController:
         # regulate a little based on room temperature: the heat pump combines
         # with outside temp and heat curve to calculate required flow temp
         else:
-            if self.should_suppress(telemetry) and self.state not in ["DHW", "DHW_WAIT"]:
+            if self.should_suppress(telemetry) and self.state == "IDLE":
                 cycle_pos = self.elapsed() % SUPPRESS_CYCLE
                 if cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION:
                     print("[room target calculation] suppress circulation burst 15º")
