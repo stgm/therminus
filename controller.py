@@ -381,7 +381,7 @@ class HeatPumpController:
 
     def is_extender_running(self) -> bool:
         """True when the run extender has raised MinFlowTemp above the baseline."""
-        return _extender_is_running
+        return self._extender_is_running
 
     def _set_active_target(self, current_temp: float, error: float) -> None:
         """Set target using the Vaillant active algorithm: mirror room error onto flow setpoint."""
