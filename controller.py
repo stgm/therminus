@@ -190,10 +190,6 @@ class HeatPumpController:
             if self.elapsed() >= DHW_AFTER_RUN_WAIT:
                 self._transition("IDLE")
 
-        # elif self.state == "SUPPRESSED":
-        #     if not self.should_suppress():
-        #         self._transition("IDLE")
-
         elif self.state == "RESTING":
             if self.elapsed() >= self._t_min_rest:
                 self._transition("IDLE")
@@ -229,7 +225,7 @@ class HeatPumpController:
         # regulate a little based on room temperature: the heat pump combines
         # with outside temp and heat curve to calculate required flow temp
         else:
-            if self.should_suppress(telemetry) and self.state != "DHW":
+            if self.should_suppress(telemetry) and self.state != "DHW" and self.state != "DHW_WAIT":
                 print("[room target calculation] suppressing 10º")
                 self.target = SUPPRESSED_TEMP
             elif self._current_temp > (SETPOINT + BAND):
