@@ -76,7 +76,6 @@ SUPPRESS_CIRC_DURATION =  5 * 60   # seconds — circulation burst per cycle
 
 # Outdoor temperature above which SUPPRESSED mode activates (room warm + mild outside).
 SUPPRESS_OUTDOOR_MIN  = 10.0   # °C
-SUPPRESS_MIN_HOLD     = 10 * 60  # seconds — minimum time before toggling suppress state
 
 # Run extender: keeps the pump running by nudging MinFlowTemp upward when the
 # compressor is at minimum modulation but the flow temperature still overshoots
@@ -116,8 +115,6 @@ class HeatPumpController:
         self._state_since = time.monotonic_ns()
         self._t_min_rest  = T_MIN_REST
         self._extender_is_running = False
-        self._suppressed = False
-        self._suppress_changed_at = 0.0  # monotonic seconds
 
         # Night limiter (22:00–08:00)
         self.night_mode = NightMode()
@@ -144,19 +141,12 @@ class HeatPumpController:
     def temp_below_lower_band(self) -> bool:
         return self._current_temp < self._setpoint - self._band
 
-    def should_suppress(self, telemetry: ebus.Telemetry) -> bool:
+    def suppress_active(self, telemetry: ebus.Telemetry) -> bool:
         return (
             telemetry.outdoor_temp is not None
-            and telemetry.outdoor_temp > SUPPRESS_OUTDOOR_MIN
-            and self._current_temp > (SETPOINT + BAND)
-        )
-
-    def should_stop_suppress(self, telemetry: ebus.Telemetry) -> bool:
-        return (
-            telemetry.outdoor_temp is None
-            or telemetry.outdoor_temp < SUPPRESS_OUTDOOR_MIN
-            or self._current_temp < (SETPOINT - BAND)
-            or telemetry.flow_temp < telemetry.target_flow_temp + 1.0
+            and telemetry.outdoor_temp >= SUPPRESS_OUTDOOR_MIN
+            and self._current_temp >= (SETPOINT - BAND)
+            and telemetry.flow_temp >= telemetry.target_flow_temp + 1.0
         )
 
     def tick(self, telemetry, weather_cache: dict | None = None) -> dict:
@@ -231,16 +221,7 @@ class HeatPumpController:
         # regulate a little based on room temperature: the heat pump combines
         # with outside temp and heat curve to calculate required flow temp
         else:
-            now = time.monotonic()
-            if (time.monotonic() - self._suppress_changed_at) >= SUPPRESS_MIN_HOLD:
-                if self._suppressed and self.should_stop_suppress(telemetry):
-                    self._suppressed = False
-                    self._suppress_changed_at = now
-                elif not self._suppressed and self.should_suppress(telemetry):
-                    self._suppressed = True
-                    self._suppress_changed_at = now
-
-            if self._suppressed and self.state == "IDLE":
+            if self.suppress_active(telemetry) and self.state == "IDLE":
                 cycle_pos = self.elapsed() % SUPPRESS_CYCLE
                 if cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION:
                     print("[room target calculation] suppress circulation burst 15º")
