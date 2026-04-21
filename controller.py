@@ -82,7 +82,7 @@ SUPPRESS_OUTDOOR_MIN = 10.0   # °C
 # the target.  Resets to MIN_FLOW_TEMP when no longer needed.
 MIN_FLOW_TEMP        = 15.0   # °C — pump's configured baseline minimum flow temperature
 COMPRESSOR_MIN_SPEED = 30.0   # % — minimum modulation speed (pump cannot go lower)
-COMPRESSOR_MIN_TOL   =  1.0   # % — tolerance band around minimum modulation
+COMPRESSOR_MIN_TOL   =  0.3   # % — tolerance band around minimum modulation
 
 
 def _pump_state(telemetry) -> str:
