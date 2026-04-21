@@ -305,7 +305,7 @@ class HeatPumpController:
 
             elif (telemetry.flow_temp < telemetry.target_flow_temp
                   and not self._is_compressor_running_at_min(telemetry)):
-                desired_min_flow_temp = telemetry.flow_temp
+                desired_min_flow_temp = max(MIN_FLOW_TEMP, telemetry.min_flow_temp - 0.5)
                 print(f"[extender] toning down")
 
         self._extender_is_running = telemetry.min_flow_temp > MIN_FLOW_TEMP
