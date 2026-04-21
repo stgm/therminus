@@ -116,9 +116,8 @@ class HeatPumpController:
         self._t_min_rest  = T_MIN_REST
         self._extender_is_running = False
 
-        # Night limiter (22:00–07:00)
-        self.night_limit_hours: float | None = None  # None = not in night mode
-        self.night_run_seconds: float = 0.0          # accumulated RUNNING time tonight
+        # Night limiter (22:00–08:00)
+        self.night_mode = NightMode()
 
         # Last known sensor value
         self._current_temp     = None
@@ -162,17 +161,10 @@ class HeatPumpController:
 
         # Night window: 22:00–08:00. Runs every tick so startup inside the
         # window is handled correctly without special-case logic.
-        _in_night_window = ebus.now().hour >= 22 or ebus.now().hour < 8
-        if _in_night_window and not self.night_mode_active():
-            c = weather_cache or {}
-            self.start_night_mode(
-                outdoor_temp=telemetry.outdoor_temp,
-                forecast_low_tomorrow=c.get('forecast_low_tomorrow'),
-                forecast_high_tomorrow=c.get('forecast_high_tomorrow'),
-                forecast_high_today=c.get('forecast_high_today'),
-            )
-        elif not _in_night_window and self.night_mode_active():
-            self.end_night_mode()
+        self.night_mode.tick(
+            ebus.now().hour,
+            on_activate=lambda: (telemetry.outdoor_temp, weather_cache or {}, self._current_temp),
+        )
 
         self.pump = pump = _pump_state(telemetry)
 
@@ -215,11 +207,11 @@ class HeatPumpController:
         # keep artificially low when heating limit is reached during the night
         # this is for colder nights and warmer days, it's fine to have it a bit
         # colder during the mornings
-        if self.night_limit_reached():
+        if self.night_mode.limit_reached():
             self._set_idle_target()
             print(f"[controller] night limit reached"
-                    f"  total={self.night_run_seconds/3600:.2f}h"
-                    f"  limit={self.night_limit_hours:.1f}h")
+                    f"  total={self.night_mode.run_total()/3600:.2f}h"
+                    f"  limit={self.night_mode.limit_hours:.1f}h")
 
         # keep the target artificially low for some time after a run, to force a pause
         elif self.state == "RESTING":
@@ -315,59 +307,6 @@ class HeatPumpController:
             "dhw_target": self.dhw_scheduled_temp()
         }
 
-    def start_night_mode(self,
-                         outdoor_temp: float | None,
-                         forecast_low_tomorrow: float | None,
-                         forecast_high_tomorrow: float | None,
-                         forecast_high_today: float | None) -> None:
-        """
-        Activate the overnight heating limiter. Called once around 22:00.
-
-        Calculates the allowed heating hours from the formula:
-            night_loss_compensation  = 13 - (outdoor_temp + forecast_low_tomorrow) / 2
-            day_loss_precompensation = 16 - forecast_high_tomorrow
-            compensation_for_feeling = sgn(forecast_high_today - forecast_high_tomorrow)
-            room_overshoot_penalty   = 21 - room_temp
-            limit = max(0, sum of above)  hours
-        """
-        out  = outdoor_temp        if outdoor_temp        is not None else 5.0
-        low  = forecast_low_tomorrow  if forecast_low_tomorrow  is not None else 5.0
-        high = forecast_high_tomorrow if forecast_high_tomorrow is not None else 10.0
-        rt   = self._current_temp  if self._current_temp  is not None else 21.0
-
-        night_loss   = 13 - (out + low) / 2
-        day_loss     = 16 - high
-        if forecast_high_today is not None and forecast_high_tomorrow is not None:
-            diff = forecast_high_today - forecast_high_tomorrow
-            feeling = math.copysign(1.0, diff) if diff != 0 else 0.0
-        else:
-            feeling = 0.0
-        room_penalty = 21 - rt
-        limit = max(0.0, night_loss + day_loss + feeling + room_penalty)
-
-        self.night_limit_hours = limit
-        self.night_run_seconds = 0.0
-        print(f"[controller] night mode:"
-              f"  outdoor={outdoor_temp} low={forecast_low_tomorrow}"
-              f"  high_today={forecast_high_today} high_tom={forecast_high_tomorrow}"
-              f"  room={rt:.1f}"
-              f"  night_loss={night_loss:.1f} day_loss={day_loss:.1f}"
-              f"  feeling={feeling:.0f} room_penalty={room_penalty:.1f}"
-              f"  limit={limit:.1f}h")
-
-    def end_night_mode(self) -> None:
-        """Deactivate the overnight limiter. Called at 08:00."""
-        self.night_limit_hours = None
-        self.night_run_seconds = 0.0
-        print("[controller] night mode: off")
-
-    def night_mode_active(self) -> bool:
-        return self.night_limit_hours is not None
-
-    def night_limit_reached(self) -> bool:
-        return (self.night_limit_hours is not None and
-                self.night_run_seconds >= self.night_limit_hours * 3600)
-
     def dhw_scheduled_temp(self) -> float:
         """Return the target DHW temperature based on time of day and weekday."""
         now = ebus.now()
@@ -382,16 +321,11 @@ class HeatPumpController:
         if self.state == new_state: return
         print(f"[controller] {self.state} → {new_state}")
         if self.state == "RUNNING" and new_state != "RUNNING":
-            self._accumulate_run()
-        self.state       = new_state
+            self.night_mode.run_ended()
+        if new_state == "RUNNING":
+            self.night_mode.run_started()
+        self.state        = new_state
         self._state_since = time.monotonic_ns()
-
-    def _accumulate_run(self) -> None:
-        """Called in tick() just before transitioning away from RUNNING.
-        Adds the current run's elapsed time to the night total."""
-        if self.night_limit_hours is None:
-            return
-        self.night_run_seconds += self.elapsed()
 
     def _has_run_extender_data(self, telemetry) -> bool:
         """True when all telemetry fields required by the run extender are available."""
@@ -415,3 +349,88 @@ class HeatPumpController:
     def _set_idle_target(self) -> None:
         """Set target to idle temp — low enough that the pump will not run its compressor."""
         self.target = IDLE_TEMP
+
+class NightMode:
+    def __init__(self):
+        self.limit_hours: float | None = None
+        self._accumulated: float = 0.0
+        self._run_start: float | None = None
+
+    def tick(self, hour: int, on_activate) -> None:
+        in_window = hour >= 22 or hour < 8
+        if in_window and not self.is_active():
+            self.activate(*on_activate())
+        elif not in_window and self.is_active():
+            self.deactivate()
+
+    def activate(self,
+                 outdoor_temp: float | None,
+                 weather_cache: dict,
+                 room_temp: float | None) -> None:
+        """
+        Activate the overnight heating limiter. Called once around 22:00.
+
+        Calculates the allowed heating hours from the formula:
+            night_loss_compensation  = 13 - (outdoor_temp + forecast_low_tomorrow) / 2
+            day_loss_precompensation = 16 - forecast_high_tomorrow
+            compensation_for_feeling = sgn(forecast_high_today - forecast_high_tomorrow)
+            room_overshoot_penalty   = 21 - room_temp
+            limit = max(0, sum of above)  hours
+        """
+        forecast_low_tomorrow  = weather_cache.get('forecast_low_tomorrow')
+        forecast_high_tomorrow = weather_cache.get('forecast_high_tomorrow')
+        forecast_high_today    = weather_cache.get('forecast_high_today')
+
+        out  = outdoor_temp           if outdoor_temp           is not None else 5.0
+        low  = forecast_low_tomorrow  if forecast_low_tomorrow  is not None else 5.0
+        high = forecast_high_tomorrow if forecast_high_tomorrow is not None else 10.0
+        rt   = room_temp              if room_temp              is not None else 21.0
+
+        night_loss   = 13 - (out + low) / 2
+        day_loss     = 16 - high
+        if forecast_high_today is not None and forecast_high_tomorrow is not None:
+            diff = forecast_high_today - forecast_high_tomorrow
+            feeling = math.copysign(1.0, diff) if diff != 0 else 0.0
+        else:
+            feeling = 0.0
+        room_penalty = 21 - rt
+        limit = max(0.0, night_loss + day_loss + feeling + room_penalty)
+
+        self.limit_hours  = limit
+        self._accumulated = 0.0
+        self._run_start   = None
+        print(f"[controller] night mode:"
+              f"  outdoor={outdoor_temp} low={forecast_low_tomorrow}"
+              f"  high_today={forecast_high_today} high_tom={forecast_high_tomorrow}"
+              f"  room={rt:.1f}"
+              f"  night_loss={night_loss:.1f} day_loss={day_loss:.1f}"
+              f"  feeling={feeling:.0f} room_penalty={room_penalty:.1f}"
+              f"  limit={limit:.1f}h")
+
+    def deactivate(self) -> None:
+        """Deactivate the overnight limiter. Called at 08:00."""
+        self.limit_hours  = None
+        self._accumulated = 0.0
+        self._run_start   = None
+        print("[controller] night mode: off")
+
+    def is_active(self) -> bool:
+        return self.limit_hours is not None
+
+    def run_started(self) -> None:
+        self._run_start = time.monotonic_ns()
+
+    def run_ended(self) -> None:
+        if self._run_start is not None:
+            self._accumulated += (time.monotonic_ns() - self._run_start) / 1e9
+            self._run_start = None
+
+    def run_total(self) -> float:
+        """Accumulated RUNNING time tonight, including the current in-progress run."""
+        total = self._accumulated
+        if self._run_start is not None:
+            total += (time.monotonic_ns() - self._run_start) / 1e9
+        return total
+
+    def limit_reached(self) -> bool:
+        return self.is_active() and self.run_total() >= self.limit_hours * 3600

@@ -73,9 +73,9 @@ def debug_status(controller: HeatPumpController) -> str:
         f"{controller.elapsed()/60:.0f}min"
     )
 
-    if controller.night_limit_hours is not None:
-        message += f" night:{controller.night_run_seconds/60:.1f}/{controller.night_limit_hours*60:.1f}min"
-    if controller.night_limit_reached():
+    if controller.night_mode.is_active():
+        message += f" night:{controller.night_mode.run_total()/60:.1f}/{controller.night_mode.limit_hours*60:.1f}min"
+    if controller.night_mode.limit_reached():
         message += " night:LIMIT REACHED"
     if controller.is_extender_running():
         message += " extending run!"
