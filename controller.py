@@ -76,6 +76,7 @@ SUPPRESS_CIRC_DURATION =  5 * 60   # seconds — circulation burst per cycle
 
 # Outdoor temperature above which SUPPRESSED mode activates (room warm + mild outside).
 SUPPRESS_OUTDOOR_MIN  = 10.0   # °C
+SUPPRESS_OFF_MIN      = 30 * 60  # seconds — minimum time suppress stays off before re-activating
 
 # Run extender: keeps the pump running by nudging MinFlowTemp upward when the
 # compressor is at minimum modulation but the flow temperature still overshoots
@@ -115,6 +116,8 @@ class HeatPumpController:
         self._state_since = time.monotonic_ns()
         self._t_min_rest  = T_MIN_REST
         self._extender_is_running = False
+        self._suppressing = False
+        self._suppress_off_at = 0.0  # monotonic seconds
 
         # Night limiter (22:00–08:00)
         self.night_mode = NightMode()
@@ -221,7 +224,15 @@ class HeatPumpController:
         # regulate a little based on room temperature: the heat pump combines
         # with outside temp and heat curve to calculate required flow temp
         else:
-            if self.suppress_active(telemetry) and self.state == "IDLE":
+            now = time.monotonic()
+            if self._suppressing and not self.suppress_active(telemetry):
+                self._suppressing = False
+                self._suppress_off_at = now
+            elif not self._suppressing and self.suppress_active(telemetry):
+                if now - self._suppress_off_at >= SUPPRESS_OFF_MIN:
+                    self._suppressing = True
+
+            if self._suppressing and self.state == "IDLE":
                 cycle_pos = self.elapsed() % SUPPRESS_CYCLE
                 if cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION:
                     print("[room target calculation] suppress circulation burst 15º")
