@@ -159,8 +159,8 @@ class HeatPumpController:
         if self._current_temp is None:
             return {}
 
-        # Night window: 22:00–08:00. Runs every tick so startup inside the
-        # window is handled correctly without special-case logic.
+        # Night window: 22:00–08:00. Gets the current hour to decide when to start/stop.
+        # When starting, it takes weather forecast data + local measurements.
         self.night_mode.tick(
             ebus.now().hour,
             on_activate=lambda: (telemetry.outdoor_temp, weather_cache or {}, self._current_temp),
@@ -337,6 +337,9 @@ class HeatPumpController:
         """True when the compressor is on and running at its minimum modulation speed."""
         return (telemetry.compressor_on()
                 and abs(telemetry.compressor_speed - COMPRESSOR_MIN_SPEED) <= COMPRESSOR_MIN_TOL)
+
+    def night_limit_reached(self) -> bool:
+        return self.night_mode.limit_reached()
 
     def is_extender_running(self) -> bool:
         """True when the run extender has raised MinFlowTemp above the baseline."""
