@@ -220,16 +220,20 @@ class HeatPumpController:
         # ── Phase 3: disable circulation ──────────────────────────────────────
         #
 
-        if self.state == "IDLE":
+        if self.state == "IDLE" and self.target == IDLE_TEMP:
             now = time.monotonic()
             cycle_pos = self.elapsed() % SUPPRESS_CYCLE
-            in_burst = self._suppressing and self.state == "IDLE" and cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION
+            in_burst = self._suppressing and cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION
+
+            # should we suppress at all
             suppress_wanted = (
                 telemetry.outdoor_temp is not None
                 and telemetry.outdoor_temp >= SUPPRESS_OUTDOOR_MIN
                 and self._current_temp >= (SETPOINT - BAND)
                 and (in_burst or telemetry.flow_temp >= telemetry.target_flow_temp + 1.0)
             )
+
+            # toggle suppression
             if suppress_wanted and not self._suppressing:
                 if now - self._suppress_off_at >= SUPPRESS_OFF_MIN:
                     self._suppressing = True
@@ -244,6 +248,9 @@ class HeatPumpController:
                 else:
                     print("[room target calculation] suppressing 10º")
                     self.target = SUPPRESSED_TEMP
+        else:
+            self._suppressing = False
+            self._suppress_off_at = time.monotonic()
 
         # ── Phase 4: run extender ─────────────────────────────────────────────
         #
