@@ -144,7 +144,7 @@ class HeatPumpController:
         self.target with the setpoint the pump should receive this tick.
         Returns {"room_target": float | None, "min_flow_temp": float | None}.
         """
-        if self._current_temp is None:
+        if self._current_temp is None or not telemetry.has_all_data():
             return {}
 
         # Night window: 22:00–08:00. Gets the current hour to decide when to start/stop.
@@ -247,13 +247,13 @@ class HeatPumpController:
 
         # ── Phase 4: run extender ─────────────────────────────────────────────
         #
-        # Extender can only run when RUNNING, in all other states we remove
-        # the raised minimum and set the minimum to a safe default (15ºC).
+        # Slightly raises the minimum flow temp to extend a run started by the
+        # heat pump; if not required, set minimum to a safe default (15ºC).
 
-        if self.state == "RUNNING":
-            desired_min_flow_temp = self.run_extender.stop()
+        if self.state == "RUNNING" and self.elapsed() > 20 * 60:
+            desired_min_flow_temp = self.run_extender.check(self._current_temp >= SETPOINT, telemetry)
         else:
-            desired_min_flow_temp = self.run_extender.check(self._current_temp, telemetry)
+            desired_min_flow_temp = self.run_extender.stop()
 
         # Final conclusion
 
