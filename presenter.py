@@ -37,17 +37,17 @@ def status_sentence(controller: HeatPumpController) -> str:
         return "Outside is warm enough, no heating!"
 
     elif controller.state == "RESTING":
-        if controller.temp_above_upper_band():
+        if controller.room_temp_above_upper_band():
             return "Giving the floor a rest, it's warm enough!"
-        elif controller.temp_below_lower_band():
-            return f"Slightly cold, but your heat pump is taking a nap..."
+        elif controller.room_temp_below_lower_band():
+            return "Slightly cold, but your heat pump is taking a nap..."
         else:
             return "Heating done. I'll let it rest for now."
 
     elif controller.state == "IDLE":
-        if controller.temp_above_upper_band():
+        if controller.room_temp_above_upper_band():
             return "Pretty warm inside!"
-        elif controller.temp_below_lower_band():
+        elif controller.room_temp_below_lower_band():
             return "Waiting for the pump to notice that it's a bit cold."
         else:
             return "Temperature is fine. Tuning up and down where needed."
@@ -55,9 +55,9 @@ def status_sentence(controller: HeatPumpController) -> str:
     elif controller.state == "RUNNING":
         if controller.night_limit_reached():
             return "No heating anymore! Tomorrow's forecast is great."
-        if controller.temp_above_upper_band():
+        if controller.room_temp_above_upper_band():
             return "Heating the floor a little."
-        elif controller.temp_below_lower_band():
+        elif controller.room_temp_below_lower_band():
             return f"Heating right now! Been at it for {controller.elapsed()/60:.0f} min."
         else:
             return "Heating a little to keep it nice and cosy."
@@ -77,7 +77,7 @@ def debug_status(controller: HeatPumpController) -> str:
         message += f" night:{controller.night_mode.run_total()/60:.1f}/{controller.night_mode.limit_hours*60:.1f}min"
     if controller.night_mode.limit_reached():
         message += " night:LIMIT REACHED"
-    if controller.is_extender_running():
+    if controller.run_extender.is_running():
         message += " extending run!"
 
     return message

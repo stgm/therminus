@@ -36,6 +36,9 @@ EBUSD_HOST      = "127.0.0.1"
 EBUSD_PORT      = 8888
 EBUSD_CIRCUIT   = "hmu"      # ebusd circuit that owns all heat pump messages
 
+COMPRESSOR_MIN_SPEED = 30.0   # % — minimum modulation speed (pump cannot go lower)
+COMPRESSOR_MIN_TOL   =  0.3   # % — tolerance band around minimum modulation
+
 # ── Module state ───────────────────────────────────────────────────────────────
 _loop           = None
 _ebus           = None    # shared Ebus instance, initialized on first use
@@ -64,21 +67,33 @@ class Telemetry:
     outdoor_temp:          float | None = field(default=None, metadata={"circuit": "vwzio", "msgdef": "OutdoorTemp",            "type": float})
     building_circuit_flow: float | None = field(default=None, metadata={"circuit": "hmu",   "msgdef": "BuildingCircuitFlow",    "type": float})
 
-    def compressor_on(self) -> bool:
+    def has_all_data(self) -> bool:
+        return None not in (
+            self.compressor_speed, self.flow_temp, self.target_flow_temp,
+            self.min_flow_temp, self.max_flow_temp)
+
+    def is_compressor_on(self) -> bool:
         """Compressor is running (speed known and > 0)."""
         return self.compressor_speed is not None and self.compressor_speed > 0
 
-    def compressor_off(self) -> bool:
+    def is_compressor_off(self) -> bool:
         """Compressor is confirmed stopped (speed known and == 0)."""
         return self.compressor_speed is not None and self.compressor_speed == 0
 
-    def heating(self) -> bool:
-        """Compressor is running on the heating circuit."""
-        return self.compressor_on() and self.valve == VALVE_HEATING
+    def is_compressor_running_at_min(self) -> bool:
+        """True when the compressor is on and running at its minimum modulation speed."""
+        if self.compressor_speed is None:
+            raise
+        return (self.is_compressor_on()
+                and abs(self.compressor_speed - COMPRESSOR_MIN_SPEED) <= COMPRESSOR_MIN_TOL)
 
-    def making_dhw(self) -> bool:
+    def is_heating(self) -> bool:
+        """Compressor is running on the heating circuit."""
+        return self.is_compressor_on() and self.valve == VALVE_HEATING
+
+    def is_making_dhw(self) -> bool:
         """Compressor is running on the domestic hot water circuit."""
-        return self.compressor_on() and self.valve == VALVE_DHW
+        return self.is_compressor_on() and self.valve == VALVE_DHW
 
     def circuit_running(self) -> bool:
         """Building circuit circulation pump is confirmed on."""
