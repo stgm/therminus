@@ -101,7 +101,7 @@ class HeatPumpController:
         # Last known sensor value
         self._current_temp     = None
 
-    def _pump_state(self, telemetry) -> str:
+    def _pump_state(self, telemetry: ebus.Telemetry) -> str:
         """
         Derive the current pump hardware state from telemetry — no history, no side effects.
 
@@ -111,9 +111,9 @@ class HeatPumpController:
         heating      compressor on + heating valve
         circulating  circuit running, compressor off
         """
-        if telemetry.making_dhw():      return "dhw"
+        if telemetry.is_making_dhw():      return "dhw"
         if telemetry.circuit_off():     return "dormant"
-        if telemetry.heating():         return "heating"
+        if telemetry.is_heating():         return "heating"
         if telemetry.circuit_running(): return "circulating"
         return "dormant"                # telemetry not yet available
 
