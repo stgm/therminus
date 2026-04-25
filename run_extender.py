@@ -52,7 +52,7 @@ class RunExtender:
 
         # Make sure extender stops when room temp reached
         # Although the heat pump can still decide to continue!
-        if not still_requested and self.elapsed() >= 1.5 * 60 * 60:
+        if not still_requested and self.elapsed() >= 1 * 60 * 60:
             desired_min_flow_temp = MIN_FLOW_TEMP
             print(
                 f"[extender] stopped after {self.elapsed() / 3600.0} hours and room is good"
