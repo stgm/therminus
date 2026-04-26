@@ -34,11 +34,13 @@ class RunExtender:
         return self._extender_is_running
 
     def elapsed(self) -> int:
-        assert self._started_at is not None
+        if self._started_at is None:
+            self._started_at = int(time.monotonic())
         return int(time.monotonic()) - self._started_at
 
     def stop(self) -> float | None:
         if self._extender_is_running:
+            self._started_at = None
             self._extender_is_running = False
             return MIN_FLOW_TEMP
         else:
@@ -52,7 +54,7 @@ class RunExtender:
 
         # Make sure extender stops when room temp reached
         # Although the heat pump can still decide to continue!
-        if temp_reached and self._started_at is not None and self.elapsed() >= 1 * 60 * 60:
+        if temp_reached and self.elapsed() >= 1 * 60 * 60:
             desired_min_flow_temp = MIN_FLOW_TEMP
             print(
                 f"[extender] stopped after {self.elapsed() / 3600.0} hours and room is good"
@@ -78,8 +80,6 @@ class RunExtender:
             and telemetry.flow_temp < telemetry.max_flow_temp
             and telemetry.target_flow_temp >= MIN_FLOW_TEMP
         ):
-            if self._started_at is None:
-                self._started_at = int(time.monotonic())
             desired_min_flow_temp = telemetry.flow_temp
             print(
                 f"[extender] extending"
