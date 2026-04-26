@@ -34,7 +34,7 @@ class RunExtender:
         return self._extender_is_running
 
     def elapsed(self) -> int:
-        assert self._started_at
+        assert self._started_at is not None
         return int(time.monotonic()) - self._started_at
 
     def stop(self) -> float | None:
