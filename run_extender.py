@@ -44,7 +44,7 @@ class RunExtender:
         else:
             return None
 
-    def check(self, still_requested: bool, telemetry: Telemetry) -> float | None:
+    def run(self, temp_reached: bool, telemetry: Telemetry) -> float | None:
         assert telemetry.has_all_data()
 
         # Track the flow temperature carefully:
@@ -52,7 +52,7 @@ class RunExtender:
 
         # Make sure extender stops when room temp reached
         # Although the heat pump can still decide to continue!
-        if not still_requested and self.elapsed() >= 1 * 60 * 60:
+        if temp_reached and self._started_at is not None and self.elapsed() >= 1 * 60 * 60:
             desired_min_flow_temp = MIN_FLOW_TEMP
             print(
                 f"[extender] stopped after {self.elapsed() / 3600.0} hours and room is good"

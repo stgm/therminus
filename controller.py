@@ -258,7 +258,7 @@ class HeatPumpController:
         # heat pump; if not required, set minimum to a safe default (15ºC).
 
         if self.state == "RUNNING":# and self.elapsed() > 20 * 60:
-            desired_min_flow_temp = self.run_extender.check(self._current_temp >= SETPOINT, telemetry)
+            desired_min_flow_temp = self.run_extender.run(self._current_temp >= SETPOINT, telemetry)
         else:
             desired_min_flow_temp = self.run_extender.stop()
 
