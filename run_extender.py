@@ -50,7 +50,7 @@ class RunExtender:
         assert telemetry.has_all_data()
 
         # Track the flow temperature carefully:
-        desired_min_flow_temp = telemetry.MIN_FLOW_TEMP
+        desired_min_flow_temp = MIN_FLOW_TEMP
 
         # Make sure extender stops when room temp reached
         # Although the heat pump can still decide to continue!
