@@ -170,8 +170,8 @@ def read_telemetry() -> Telemetry:
     """
     try:
         t = _run_async(_async_read_telemetry())
-        print(f"flow={t.flow_temp:.2f}°C comp={t.compressor_speed:3.0f}%"
-              f" valve={t.valve[:4]} outdoor={t.outdoor_temp:.2f}°C |", end="")
+        print(f"flow={t.flow_temp:2.2f}°C comp={t.compressor_speed:3.0f}%"
+              f" valve={t.valve[:4]} outdoor={t.outdoor_temp:2.2f}°C |", end="")
         return t
     except Exception as e:
         print(f"[ebus] read error: {e}")
