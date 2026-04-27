@@ -36,6 +36,7 @@ import time
 import ebus
 from run_extender import RunExtender
 from night_mode import NightMode
+from suppressor import CirculationSuppressor
 
 # ── Control constants ─────────────────────────────────────────────────────────
 
@@ -71,14 +72,6 @@ IDLE_TEMP    = 15.0   # °C
 # Low enough to ensure the circulation pump stops entirely.
 SUPPRESSED_TEMP      = 10.0   # °C
 
-# During suppress, briefly raise to IDLE_TEMP once per cycle so the
-# circulation pump can run without the compressor firing.
-SUPPRESS_CYCLE         = 60 * 60   # seconds — full suppress cycle length
-SUPPRESS_CIRC_DURATION =  5 * 60   # seconds — circulation burst per cycle
-
-# Outdoor temperature above which SUPPRESSED mode activates (room warm + mild outside).
-SUPPRESS_OUTDOOR_MIN  = 10.0   # °C
-SUPPRESS_OFF_MIN      = 30 * 60  # seconds — minimum time suppress stays off before re-activating
 
 
 class HeatPumpController:
@@ -92,11 +85,10 @@ class HeatPumpController:
         self._setpoint    = SETPOINT
         self._band        = BAND
         self._state_since = time.monotonic_ns()
-        self._suppressing = False
-        self._suppress_off_at = 0.0  # monotonic seconds
 
         self.run_extender = RunExtender()
         self.night_mode = NightMode()
+        self.suppressor = CirculationSuppressor()
 
         # Last known sensor value
         self._current_temp     = None
@@ -221,43 +213,21 @@ class HeatPumpController:
         #
 
         if self.state == "IDLE" and self.target == IDLE_TEMP:
-            now = time.monotonic()
-            cycle_pos = self.elapsed() % SUPPRESS_CYCLE
-            in_burst = self._suppressing and cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION
-
-            # should we suppress at all
-            suppress_wanted = (
-                telemetry.outdoor_temp is not None
-                and telemetry.outdoor_temp >= SUPPRESS_OUTDOOR_MIN
-                and self._current_temp >= (SETPOINT - BAND)
-                and (in_burst or telemetry.flow_temp >= telemetry.target_flow_temp + 1.0)
-            )
-
-            # toggle suppression
-            if suppress_wanted and not self._suppressing:
-                if now - self._suppress_off_at >= SUPPRESS_OFF_MIN:
-                    self._suppressing = True
-            elif not suppress_wanted and self._suppressing:
-                self._suppressing = False
-                self._suppress_off_at = now
-
-            if self._suppressing:
-                if cycle_pos >= SUPPRESS_CYCLE - SUPPRESS_CIRC_DURATION:
-                    print("[room target calculation] suppress circulation burst 15º")
-                    self.target = IDLE_TEMP
-                else:
-                    print("[room target calculation] suppressing 10º")
-                    self.target = SUPPRESSED_TEMP
+            if self.suppressor.check(telemetry):
+                print("[room target calculation] suppressing")
+                self.target = SUPPRESSED_TEMP
+            else:
+                print("[room target calculation] suppressing - but circulating for a while")
+                self.target = IDLE_TEMP
         else:
-            self._suppressing = False
-            self._suppress_off_at = time.monotonic()
+            self.suppressor.reset()
 
         # ── Phase 4: run extender ─────────────────────────────────────────────
         #
         # Slightly raises the minimum flow temp to extend a run started by the
         # heat pump; if not required, set minimum to a safe default (15ºC).
 
-        if self.state == "RUNNING":# and self.elapsed() > 20 * 60:
+        if self.state == "RUNNING":
             desired_min_flow_temp = self.run_extender.run(self._current_temp >= SETPOINT, telemetry)
         else:
             desired_min_flow_temp = self.run_extender.stop()
