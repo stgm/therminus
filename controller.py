@@ -188,9 +188,9 @@ class HeatPumpController:
             # this is for colder nights and warmer days, it's fine to have it a bit
             # colder during the mornings
             self._set_idle_target()
-            print(f"[controller] night limit reached"
+            print(f"| night limit reached"
                     f"  total={self.night_mode.run_total()/3600:.2f}h"
-                    f"  limit={self.night_mode.limit_hours:.1f}h")
+                    f"  limit={self.night_mode.limit_hours:.1f}h", end="")
 
         elif self.state == "RESTING":
             # keep the target artificially low for some time after a run, to force a pause
@@ -200,13 +200,13 @@ class HeatPumpController:
             # Room satisfied — keep target low so pump won't fire compressor.
             # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
             # before the compressor stops naturally.
-            print("| idle   ")
+            print("| idle   ", end="")
             self._set_idle_target()
         else:
             # "active" strategy
             # regulate a little based on room temperature: the heat pump combines
             # with outside temp and heat curve to calculate required flow temp
-            print("| active ")
+            print("| active ", end="")
             self._set_active_target(self._current_temp, self.error())
 
         # ── Phase 3: disable circulation ──────────────────────────────────────
