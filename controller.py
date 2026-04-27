@@ -218,7 +218,6 @@ class HeatPumpController:
                 self.target = SUPPRESSED_TEMP
             else:
                 print("[room target calculation] suppressing - but circulating for a while")
-                self.target = IDLE_TEMP
         else:
             self.suppressor.reset()
 

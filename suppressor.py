@@ -16,31 +16,54 @@ SUPPRESS_OFF_MIN = (
 
 
 class CirculationSuppressor:
+    """
+    Stops circulation when it's generally warm, by setting the target
+    room temperature to 10ºC.
+
+    Note: when re-enabling circulation, the heat pump sets the energy
+    integral exactly to the lowest limit, so if the water near the
+    heat pump gets very cool, the flow sensor notices and the energy
+    integral drops goes down, which immediately starts the compressor.
+    And if the building water circuit is still reasonably high, it
+    will also very quickly turn of the compressor again.
+
+    This is why the suppression algorithm briefly restarts the circuit
+    from time to time, to make sure this doesn't happen.
+    """
     def __init__(self):
         self.reset()
 
     def reset(self):
         self._suppressing = False
-        self._started_at = 0
-        self._stopped_at = 0
+        self._started_at = 0  # to track when pause is needed
+        self._stopped_at = 0  # to track minimum waiting time after stop
 
     def check(self, telemetry: Telemetry) -> bool:
         now = int(time.monotonic())
         time_since_start = now - self._started_at
         time_since_last = now - self._stopped_at
 
-        # although we require room set point to be 15º, here we have a few
-        # extra requirements for the suppression to kick in
+        # Minimum requirement for the suppressor to be asked to check
+        # is that room temp is enough. But we also check a few other
+        # things:
+
+        # 1. outdoor temp should be high enough or we never consider
         min_outdoor_reached = telemetry.outdoor_temp >= SUPPRESS_OUTDOOR_MIN
-        in_pause = self._suppressing and time_since_start >= SUPPRESS_LEN
+
+        # 2. we need the flow sensor in the outside heat pump to stay
+        #    some margin above target, otherwise we stop suppressing
         comfortable_flow_temp = telemetry.flow_temp >= telemetry.target_flow_temp + 1.0
+
+        # 3. If we have a suppression pause (re-enabling circuit flow
+        #    for a while) we ignore requirement #2
+        in_pause = self._suppressing and time_since_start >= SUPPRESS_LEN
+
         suppress_allowed = min_outdoor_reached and (comfortable_flow_temp or in_pause)
 
         # toggle suppression state (otherwise it just stays the same)
-        if suppress_allowed and not self._suppressing:
-            if time_since_last >= SUPPRESS_OFF_MIN:
-                self._suppressing = True
-                self._started_at = now
+        if suppress_allowed and not self._suppressing and time_since_last >= SUPPRESS_OFF_MIN:
+            self._suppressing = True
+            self._started_at = now
         elif not suppress_allowed and self._suppressing:
             self._suppressing = False
             self._stopped_at = now
@@ -48,9 +71,11 @@ class CirculationSuppressor:
         if not self._suppressing:
             return False
         elif time_since_start >= SUPPRESS_LEN + SUPPRESS_PAUSE:
-            self._started_at = now  # reset after pause
+            # reset timer after pause
+            self._started_at = now
             return True
         elif time_since_start >= SUPPRESS_LEN:
+            # start of pause
             return False
         else:
             return True
