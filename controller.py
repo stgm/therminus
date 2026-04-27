@@ -200,13 +200,13 @@ class HeatPumpController:
             # Room satisfied — keep target low so pump won't fire compressor.
             # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
             # before the compressor stops naturally.
-            print("[room target calculation] idle 15º")
+            print("| idle   ")
             self._set_idle_target()
         else:
             # "active" strategy
             # regulate a little based on room temperature: the heat pump combines
             # with outside temp and heat curve to calculate required flow temp
-            print("[room target calculation] active strategy")
+            print("| active ")
             self._set_active_target(self._current_temp, self.error())
 
         # ── Phase 3: disable circulation ──────────────────────────────────────
@@ -214,10 +214,10 @@ class HeatPumpController:
 
         if self.state == "IDLE" and self.target == IDLE_TEMP:
             if self.suppressor.check(telemetry):
-                print("[room target calculation] suppressing")
+                print("| suppressing      ", end="")
                 self.target = SUPPRESSED_TEMP
             else:
-                print("[room target calculation] suppressing - but circulating for a while")
+                print("| suppression pause", end="")
         else:
             self.suppressor.reset()
 
@@ -232,12 +232,15 @@ class HeatPumpController:
             desired_min_flow_temp = self.run_extender.stop()
 
         # Final conclusion
-
-        return {
+        conclusion = {
             "room_target": self.target,
             "min_flow_temp": desired_min_flow_temp,
             "dhw_target": self.dhw_scheduled_temp()
         }
+
+        print(f"| {room_target} | {min_flow_temp} | {dhw_target}")
+
+        return conclusion
 
     def dhw_scheduled_temp(self) -> float:
         """Return the target DHW temperature based on time of day and weekday."""

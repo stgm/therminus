@@ -170,8 +170,8 @@ def read_telemetry() -> Telemetry:
     """
     try:
         t = _run_async(_async_read_telemetry())
-        print(f"[ebus] flow={t.flow_temp}°C  comp={t.compressor_speed}%"
-              f"  valve={t.valve}  outdoor={t.outdoor_temp}°C")
+        print(f"flow={t.flow_temp:.2f}°C comp={t.compressor_speed:.2f}%"
+              f" valve={t.valve[:4]} outdoor={t.outdoor_temp:.2f}°C |", end="")
         return t
     except Exception as e:
         print(f"[ebus] read error: {e}")
@@ -230,7 +230,7 @@ async def _async_write(msgdef_name: str, value: float) -> None:
         print(f"[ebus] WARNING: {EBUSD_CIRCUIT}/{msgdef_name} msgdef not found")
         return
     await ebus.async_write(msgdef, value)
-    print(f"[ebus] wrote {EBUSD_CIRCUIT}/{msgdef_name} = {value}")
+    # print(f"[ebus] wrote {EBUSD_CIRCUIT}/{msgdef_name} = {value}")
 
 
 async def _async_read_outside_receiver() -> dict | None:
