@@ -94,7 +94,7 @@ class RunExtender:
             desired_min_flow_temp = max(
                 MIN_FLOW_TEMP, telemetry.min_flow_temp - 0.5
             )
-            print(f"[extender] toning down")
+            print(f"[extender] toning down from {telemetry.min_flow_temp} to {desired_min_flow_temp}")
 
         # TODO or base on telemetry
         self._extender_is_running = desired_min_flow_temp > MIN_FLOW_TEMP
