@@ -238,7 +238,7 @@ class HeatPumpController:
             "dhw_target": self.dhw_scheduled_temp()
         }
 
-        print(f"| {room_target} | {min_flow_temp} | {dhw_target}")
+        print(f'| {conclusion["room_target"]} | {conclusion["min_flow_temp"]} | {conclusion["dhw_target"]}')
 
         return conclusion
 
