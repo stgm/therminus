@@ -13,8 +13,10 @@ class Logger:
             if self._extra != "":
                 self._extra += " | "
             self._extra += value
-        else:
+        elif name in ["base", "targets"]
             super().__setattr__(f"_{name}", value)
+        else:
+            super().__setattr__(name, value)
 
     def __str__(self):
         """Returns log line and resets it"""
