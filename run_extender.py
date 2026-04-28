@@ -47,7 +47,7 @@ class RunExtender:
         else:
             return None
 
-    def run(self, temp_reached: bool, telemetry: Telemetry) -> float | None:
+    def run(self, temp_reached: bool, telemetry: Telemetry) -> tuple[float | None, str] :
         assert telemetry.has_all_data()
 
         # Track the flow temperature carefully:
@@ -56,15 +56,15 @@ class RunExtender:
         # else:
         #     desired_min_flow_temp = MIN_FLOW_TEMP
         desired_min_flow_temp = None
+        message = None
 
         # Make sure extender stops when room temp reached
         # Although the heat pump can still decide to continue!
         if temp_reached and self.elapsed() >= 1 * 60 * 60:
             desired_min_flow_temp = MIN_FLOW_TEMP
-            print(
+            message = (
                 f"[extender] stopped after {self.elapsed() / 3600.0} hours and room is good"
-                f"  min={telemetry.min_flow_temp}",
-                end="",
+                f"  min={telemetry.min_flow_temp}"
             )
 
         # Target flow calculated by heat pump drops below the set min flow temp
@@ -74,10 +74,9 @@ class RunExtender:
             and telemetry.min_flow_temp > MIN_FLOW_TEMP
         ):
             desired_min_flow_temp = MIN_FLOW_TEMP
-            print(
+            message = (
                 f"[extender] reset (no longer needed)"
-                f"  target={telemetry.target_flow_temp}  min={telemetry.min_flow_temp}",
-                end="",
+                f"  target={telemetry.target_flow_temp}  min={telemetry.min_flow_temp}"
             )
 
         # Actual flow overshoots target at minimum modulation — extend the run.
@@ -88,11 +87,10 @@ class RunExtender:
             and telemetry.target_flow_temp >= MIN_FLOW_TEMP
         ):
             desired_min_flow_temp = telemetry.flow_temp
-            print(
+            message = (
                 f"[extender] extending"
                 f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
-                f"  comp={telemetry.compressor_speed}%",
-                end="",
+                f"  comp={telemetry.compressor_speed}%"
             )
 
         elif (
@@ -100,13 +98,12 @@ class RunExtender:
             and telemetry.min_flow_temp > MIN_FLOW_TEMP
         ):
             desired_min_flow_temp = max(MIN_FLOW_TEMP, telemetry.min_flow_temp - 0.5)
-            print(
-                f"[extender] toning down from {telemetry.min_flow_temp} to {desired_min_flow_temp}",
-                end="",
+            message = (
+                f"[extender] toning down from {telemetry.min_flow_temp} to {desired_min_flow_temp}"
             )
 
         # TODO or base on telemetry
         self._extender_is_running = (
             desired_min_flow_temp is not None and desired_min_flow_temp > MIN_FLOW_TEMP
         ) or telemetry.min_flow_temp > MIN_FLOW_TEMP
-        return desired_min_flow_temp
+        return desired_min_flow_temp, message

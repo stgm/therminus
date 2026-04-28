@@ -34,6 +34,7 @@ import math
 import time
 
 import ebus
+from logger import Logger
 from run_extender import RunExtender
 from night_mode import NightMode
 from suppressor import CirculationSuppressor
@@ -89,6 +90,8 @@ class HeatPumpController:
         self.run_extender = RunExtender()
         self.night_mode = NightMode()
         self.suppressor = CirculationSuppressor()
+
+        self.log = Logger()
 
         # Last known sensor value
         self._current_temp     = None
@@ -188,9 +191,11 @@ class HeatPumpController:
             # this is for colder nights and warmer days, it's fine to have it a bit
             # colder during the mornings
             self._set_idle_target()
-            print(f"| night limit reached"
-                    f"  total={self.night_mode.run_total()/3600:.2f}h"
-                    f"  limit={self.night_mode.limit_hours:.1f}h", end="")
+            self.log.extra = (
+                f"night limit reached"
+                f"  total={self.night_mode.run_total()/3600:.2f}h"
+                f"  limit={self.night_mode.limit_hours:.1f}h"
+            )
 
         elif self.state == "RESTING":
             # keep the target artificially low for some time after a run, to force a pause
@@ -200,13 +205,13 @@ class HeatPumpController:
             # Room satisfied — keep target low so pump won't fire compressor.
             # Stay at 15 (not 10) while RUNNING so we don't risk circuit_off
             # before the compressor stops naturally.
-            print("| idle   ", end="")
+            self.log.extra = "idle"
             self._set_idle_target()
         else:
             # "active" strategy
             # regulate a little based on room temperature: the heat pump combines
             # with outside temp and heat curve to calculate required flow temp
-            print("| active ", end="")
+            self.log.extra = "active"
             self._set_active_target(self._current_temp, self.error())
 
         # ── Phase 3: disable circulation ──────────────────────────────────────
@@ -214,10 +219,10 @@ class HeatPumpController:
 
         if self.state == "IDLE" and self.target == IDLE_TEMP:
             if self.suppressor.check(telemetry):
-                print("| suppressing      ", end="")
+                self.log.extra = "suppressing"
                 self.target = SUPPRESSED_TEMP
             else:
-                print("| suppression pause", end="")
+                self.log.extra = "suppression pause"
         else:
             self.suppressor.reset()
 
@@ -227,9 +232,9 @@ class HeatPumpController:
         # heat pump; if not required, set minimum to a safe default (15ºC).
 
         if self.state == "RUNNING":
-            desired_min_flow_temp = self.run_extender.run(self._current_temp >= SETPOINT, telemetry)
+            desired_min_flow_temp, self.log.extra = self.run_extender.run(self._current_temp >= SETPOINT, telemetry)
         else:
-            desired_min_flow_temp = self.run_extender.stop()
+            desired_min_flow_temp, self.log.extra = self.run_extender.stop()
 
         # Final conclusion
         conclusion = {
@@ -238,8 +243,8 @@ class HeatPumpController:
             "dhw_target": self.dhw_scheduled_temp()
         }
 
-        print(f'| {conclusion["room_target"]} | {conclusion["min_flow_temp"]} | {conclusion["dhw_target"]}')
-
+        self.log.targets = f'{conclusion["room_target"]} | {conclusion["min_flow_temp"]} | {conclusion["dhw_target"]}'
+        print(self.log)
         return conclusion
 
     def dhw_scheduled_temp(self) -> float:
@@ -254,7 +259,7 @@ class HeatPumpController:
     def _transition(self, new_state: str) -> None:
         """Record a state change and log it."""
         if self.state == new_state: return
-        print(f"[controller] {self.state} → {new_state}")
+        self.log.extra = f"{self.state} → {new_state}"
         if self.state == "RUNNING" and new_state != "RUNNING":
             self.night_mode.run_ended()
         if new_state == "RUNNING":
