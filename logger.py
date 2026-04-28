@@ -22,7 +22,7 @@ class Logger:
     def __str__(self):
         """Returns log line and resets it"""
         result = (
-            f"{self._base:50} | "
+            f"{self._base:57} | "
             f"{self._targets:20} | "
             f"{self._extra}"
         )

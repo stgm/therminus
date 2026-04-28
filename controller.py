@@ -144,7 +144,7 @@ class HeatPumpController:
 
         self.log.base = (
             f"flow={telemetry.flow_temp:2.2f}°C comp={telemetry.compressor_speed:3.0f}%"
-            f" valve={telemetry.valve[:4]} outdoor={telemetry.outdoor_temp:2.2f}°C"
+            f" valve={telemetry.valve[:4]} in={self.current_temp():2.2f} out={telemetry.outdoor_temp:2.2f}°C"
         )
 
 
