@@ -142,6 +142,12 @@ class HeatPumpController:
         if self._current_temp is None or not telemetry.has_all_data():
             return {}
 
+        self.log.base = (
+            f"flow={telemetry.flow_temp:2.2f}°C comp={telemetry.compressor_speed:3.0f}%"
+            f" valve={telemetry.valve[:4]} outdoor={telemetry.outdoor_temp:2.2f}°C"
+        )
+
+
         # Night window: 22:00–08:00. Gets the current hour to decide when to start/stop.
         # When starting, it takes weather forecast data + local measurements.
         self.night_mode.tick(
