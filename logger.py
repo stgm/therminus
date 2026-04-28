@@ -10,9 +10,10 @@ class Logger:
 
     def __setattr__(self, name, value):
         if name == "extra":
-            if self._extra != "":
-                self._extra += " | "
-            self._extra += value
+            if value is not None:
+                if self._extra != "":
+                    self._extra += " | "
+                self._extra += value
         elif name in ["base", "targets"]:
             super().__setattr__(f"_{name}", value)
         else:
