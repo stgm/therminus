@@ -47,7 +47,7 @@ class RunExtender:
         else:
             return None
 
-    def run(self, temp_reached: bool, telemetry: Telemetry) -> tuple[float | None, str] :
+    def run(self, temp_reached: bool, telemetry: Telemetry) -> tuple[float | None, str]:
         assert telemetry.has_all_data()
 
         # Track the flow temperature carefully:
@@ -75,7 +75,7 @@ class RunExtender:
         ):
             desired_min_flow_temp = MIN_FLOW_TEMP
             message = (
-                f"[extender] reset (no longer needed)"
+                f"[extender] no longer needed"
                 f"  target={telemetry.target_flow_temp}  min={telemetry.min_flow_temp}"
             )
 
@@ -87,20 +87,14 @@ class RunExtender:
             and telemetry.target_flow_temp >= MIN_FLOW_TEMP
         ):
             desired_min_flow_temp = telemetry.flow_temp
-            message = (
-                f"[extender] extending"
-                f"  flow={telemetry.flow_temp}  target={telemetry.target_flow_temp}"
-                f"  comp={telemetry.compressor_speed}%"
-            )
+            message = "[extender] extending"
 
         elif (
             not telemetry.is_compressor_running_at_min()
             and telemetry.min_flow_temp > MIN_FLOW_TEMP
         ):
             desired_min_flow_temp = max(MIN_FLOW_TEMP, telemetry.min_flow_temp - 0.5)
-            message = (
-                f"[extender] toning down from {telemetry.min_flow_temp} to {desired_min_flow_temp}"
-            )
+            message = "[extender] toning down"
 
         # TODO or base on telemetry
         self._extender_is_running = (
