@@ -21,8 +21,8 @@ class Logger:
     def __str__(self):
         """Returns log line and resets it"""
         result = (
-            f"{self._base:52} |"
-            f"{self._targets:40} |"
+            f"{self._base:50} | "
+            f"{self._targets:20} | "
             f"{self._extra}"
         )
         self._reset()
