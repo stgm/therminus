@@ -13,7 +13,7 @@ class Logger:
             if self._extra != "":
                 self._extra += " | "
             self._extra += value
-        elif name in ["base", "targets"]
+        elif name in ["base", "targets"]:
             super().__setattr__(f"_{name}", value)
         else:
             super().__setattr__(name, value)
