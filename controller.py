@@ -213,6 +213,11 @@ class HeatPumpController:
             # before the compressor stops naturally.
             self.log.extra = "idle"
             self._set_idle_target()
+
+        elif self._current_temp >= (SETPOINT - BAND) and telemetry.outdoor_temp >= 15:
+            self.log.extra = "warm enough (out or in)"
+            self._set_idle_target()
+
         else:
             # "active" strategy
             # regulate a little based on room temperature: the heat pump combines
