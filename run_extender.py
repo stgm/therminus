@@ -39,13 +39,13 @@ class RunExtender:
             self._started_at = int(time.monotonic())
         return int(time.monotonic()) - self._started_at
 
-    def stop(self) -> float | None:
+    def stop(self) -> tuple[float | None, str | None]:
         if self._extender_is_running:
             self._started_at = None
             self._extender_is_running = False
-            return MIN_FLOW_TEMP
+            return MIN_FLOW_TEMP, "[extender] asked to stop"
         else:
-            return None
+            return None, None
 
     def run(self, temp_reached: bool, telemetry: Telemetry) -> tuple[float | None, str]:
         assert telemetry.has_all_data()
