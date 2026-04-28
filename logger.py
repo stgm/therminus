@@ -1,3 +1,5 @@
+from datetime import datetime
+
 class Logger:
 
     def __init__(self):
@@ -22,6 +24,7 @@ class Logger:
     def __str__(self):
         """Returns log line and resets it"""
         result = (
+            f"{datetime.now().strftime("%Y-%m-%d %H:%M")} "
             f"{self._base:57} | "
             f"{self._targets:20} | "
             f"{self._extra}"
