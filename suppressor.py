@@ -43,6 +43,9 @@ class CirculationSuppressor:
         time_since_start = now - self._started_at
         time_since_last = now - self._stopped_at
 
+        if telemetry.outdoor_temp >= 15:
+            return True
+
         # Minimum requirement for the suppressor to be asked to check
         # is that room temp is enough. But we also check a few other
         # things:

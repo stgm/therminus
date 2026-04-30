@@ -230,10 +230,10 @@ class HeatPumpController:
 
         if self.state == "IDLE" and self.target == IDLE_TEMP:
             if self.suppressor.check(telemetry):
-                self.log.extra = "suppressing"
+                self.log.extra = "no circulation"
                 self.target = SUPPRESSED_TEMP
             else:
-                self.log.extra = "suppression pause"
+                self.log.extra = "circulation for 5 minutes"
         else:
             self.suppressor.reset()
 
