@@ -198,9 +198,9 @@ class HeatPumpController:
             # colder during the mornings
             self._set_idle_target()
             self.log.extra = (
-                f"night limit reached"
-                f"  total={self.night_mode.run_total()/3600:.2f}h"
-                f"  limit={self.night_mode.limit_hours:.1f}h"
+                f"night limit "
+                f"({self.night_mode.run_total()/3600:.1f}/"
+                f" {self.night_mode.limit_hours:.1f}h)"
             )
 
         elif self.state == "RESTING":
