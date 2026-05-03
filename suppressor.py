@@ -14,7 +14,7 @@ SUPPRESS_LEN = 60 * 60  # seconds — full suppress cycle length
 SUPPRESS_PAUSE = 5 * 60  # seconds — circulation burst per cycle
 
 # Minimum time that suppress stays off before re-activating.
-SUPPRESS_OFF_MIN = 120 * 60
+SUPPRESS_OFF_MIN = 30 * 60
 
 # Stops circulation when it's generally warm, by setting the target
 # room temperature to 10ºC.
@@ -32,17 +32,19 @@ SUPPRESS_OFF_MIN = 120 * 60
 _suppressing = False
 _started_at = 0  # to track when pause is needed
 _stopped_at = 0  # to track minimum waiting time after stop
+_suppress_entry_diff: float | None = None  # flow_temp - target_flow_temp when suppression last started
 
 
 def reset():
-    global _suppressing, _started_at, _stopped_at
+    global _suppressing, _started_at, _stopped_at, _suppress_entry_diff
     _suppressing = False
     _started_at = 0
     _stopped_at = 0
+    _suppress_entry_diff = None
 
 
 def check(telemetry: Telemetry) -> bool:
-    global _suppressing, _started_at, _stopped_at
+    global _suppressing, _started_at, _stopped_at, _suppress_entry_diff
 
     now = int(time.monotonic())
     time_since_start = now - _started_at
@@ -69,13 +71,12 @@ def check(telemetry: Telemetry) -> bool:
     suppress_allowed = min_outdoor_reached and (comfortable_flow_temp or in_pause)
 
     # toggle suppression state (otherwise it just stays the same)
-    if (
-        suppress_allowed
-        and not _suppressing
-        and time_since_last >= SUPPRESS_OFF_MIN
-    ):
-        _suppressing = True
-        _started_at = now
+    if suppress_allowed and not _suppressing and time_since_last >= SUPPRESS_OFF_MIN:
+        current_diff = telemetry.flow_temp - telemetry.target_flow_temp
+        if _suppress_entry_diff is None or current_diff > _suppress_entry_diff:
+            _suppressing = True
+            _started_at = now
+            _suppress_entry_diff = current_diff
     elif not suppress_allowed and _suppressing:
         _suppressing = False
         _stopped_at = now
