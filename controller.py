@@ -37,7 +37,7 @@ import ebus
 from logger import Logger
 from run_extender import RunExtender
 from night_mode import NightMode
-from suppressor import CirculationSuppressor
+import suppressor
 
 # ── Control constants ─────────────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ class HeatPumpController:
 
         self.run_extender = RunExtender()
         self.night_mode = NightMode()
-        self.suppressor = CirculationSuppressor()
+
 
         self.log = Logger()
 
@@ -229,13 +229,13 @@ class HeatPumpController:
         #
 
         if self.state == "IDLE" and self.target == IDLE_TEMP:
-            if self.suppressor.check(telemetry):
+            if suppressor.check(telemetry):
                 self.log.extra = "no circulation"
                 self.target = SUPPRESSED_TEMP
             else:
                 self.log.extra = "circulation for 5 minutes"
         else:
-            self.suppressor.reset()
+            suppressor.reset()
 
         # ── Phase 4: run extender ─────────────────────────────────────────────
         #
