@@ -73,6 +73,7 @@ def check(telemetry: Telemetry) -> bool:
     # toggle suppression state (otherwise it just stays the same)
     if suppress_allowed and not _suppressing and time_since_last >= SUPPRESS_OFF_MIN:
         current_diff = telemetry.flow_temp - telemetry.target_flow_temp
+        # only restart if temp diff > previously
         if _suppress_entry_diff is None or current_diff > _suppress_entry_diff:
             _suppressing = True
             _started_at = now
