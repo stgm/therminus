@@ -62,7 +62,7 @@ T_MIN_REST   = 60 * 60   # seconds (60 min)
 
 # After DHW ends, wait this long before leaving DHW_WAIT state.
 # Prevents mistaking a post-DHW after-run on the heating circuit for a new heating cycle.
-DHW_AFTER_RUN_WAIT = 10 * 60  # seconds (10 min)
+DHW_AFTER_RUN_WAIT = 15 * 60  # seconds (15 min)
 
 # Written to the pump during RESTING (and when IDLE/RUNNING with room above band).
 # Far enough below any real room temperature that the pump will not run its
