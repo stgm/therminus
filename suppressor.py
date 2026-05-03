@@ -2,17 +2,19 @@ import time
 
 from ebus import Telemetry
 
+# Outdoor temperature above which we _may_ suppress.
+SUPPRESS_OUTDOOR_MIN = 10.0
+
+# Outdoor above which we _always_ suppress.
+SUPPRESS_OUTDOOR_ALWAYS = 15.0
+
 # During suppress, briefly raise to IDLE_TEMP once per cycle so the
 # circulation pump can run without the compressor firing.
 SUPPRESS_LEN = 60 * 60  # seconds — full suppress cycle length
 SUPPRESS_PAUSE = 5 * 60  # seconds — circulation burst per cycle
 
-# Outdoor temperature above which SUPPRESSED mode activates (room warm + mild outside).
-SUPPRESS_OUTDOOR_MIN = 10.0  # °C
-
-SUPPRESS_OFF_MIN = (
-    30 * 60
-)  # seconds — minimum time suppress stays off before re-activating
+# Minimum time that suppress stays off before re-activating.
+SUPPRESS_OFF_MIN = 120 * 60
 
 
 class CirculationSuppressor:
@@ -30,6 +32,7 @@ class CirculationSuppressor:
     This is why the suppression algorithm briefly restarts the circuit
     from time to time, to make sure this doesn't happen.
     """
+
     def __init__(self):
         self.reset()
 
@@ -43,7 +46,7 @@ class CirculationSuppressor:
         time_since_start = now - self._started_at
         time_since_last = now - self._stopped_at
 
-        if telemetry.outdoor_temp >= 15:
+        if telemetry.outdoor_temp >= SUPPRESS_OUTDOOR_ALWAYS:
             return True
 
         # Minimum requirement for the suppressor to be asked to check
@@ -64,7 +67,11 @@ class CirculationSuppressor:
         suppress_allowed = min_outdoor_reached and (comfortable_flow_temp or in_pause)
 
         # toggle suppression state (otherwise it just stays the same)
-        if suppress_allowed and not self._suppressing and time_since_last >= SUPPRESS_OFF_MIN:
+        if (
+            suppress_allowed
+            and not self._suppressing
+            and time_since_last >= SUPPRESS_OFF_MIN
+        ):
             self._suppressing = True
             self._started_at = now
         elif not suppress_allowed and self._suppressing:
