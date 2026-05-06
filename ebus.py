@@ -70,7 +70,7 @@ class Telemetry:
     def has_all_data(self) -> bool:
         return None not in (
             self.compressor_speed, self.flow_temp, self.target_flow_temp,
-            self.min_flow_temp, self.max_flow_temp)
+            self.min_flow_temp, self.max_flow_temp, self.valve)
 
     def is_compressor_on(self) -> bool:
         """Compressor is running (speed known and > 0)."""

@@ -142,9 +142,14 @@ class HeatPumpController:
         if self._current_temp is None or not telemetry.has_all_data():
             return {}
 
+        def fr(value):
+            if value is None: return None
+            if type(value) is str: return value[:4]
+            return format(value, "3.2f")
+
         self.log.base = (
-            f"flow={telemetry.flow_temp:2.2f}°C comp={telemetry.compressor_speed:3.0f}%"
-            f" valve={telemetry.valve[:4]} in={self.current_temp():2.2f} out={telemetry.outdoor_temp:2.2f}°C"
+            f"flow={fr(telemetry.flow_temp)}°C comp={fr(telemetry.compressor_speed)}%"
+            f" valve={fr(telemetry.valve)} in={fr(self.current_temp())} out={fr(telemetry.outdoor_temp)}°C"
         )
 
 
