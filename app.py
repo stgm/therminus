@@ -10,6 +10,7 @@ import threading
 import json
 import re
 import time
+import traceback
 
 from flask import Flask, Response, render_template, jsonify, request
 from controller import HeatPumpController
@@ -73,7 +74,13 @@ def _tick():
         "badge": badge,
         "state_event": event,
         "last_write": ebus.now().time().isoformat(timespec="minutes"),
+        "bus": _bus_health(),
     }))
+
+
+def _bus_health() -> dict:
+    """Contact with the heat pump, for the UI. 'failures' counts missed ticks."""
+    return {"ok": ebus.bus_healthy(), "failures": ebus.consecutive_failures()}
 
 
 def _background_refresh():
@@ -83,6 +90,13 @@ def _background_refresh():
     Refreshes weather every WEATHER_INTERVAL seconds and runs one control
     tick every CONTROL_DT seconds. Sleeps 10 seconds between wakeups so
     ticks land within ±10s of their scheduled time without busy-waiting.
+
+    Nothing raised below may escape this loop. If it did, the thread would
+    die while Flask kept serving, so the page would keep showing the last
+    known state while the pump was no longer being controlled at all. The two
+    halves are guarded separately so a weather failure cannot cost a control
+    tick. The timestamps are updated outside the guards, so a failure that
+    repeats every cycle does not turn into a busy loop.
     """
     last_weather  = 0.0
     last_tick     = 0.0
@@ -90,13 +104,19 @@ def _background_refresh():
     while True:
         now = time.time()
         if now - last_weather >= weather.INTERVAL:
-            weather.fetch(on_update=lambda icon, desc: _broadcast(
-                json.dumps({'type': 'weather', 'icon': icon, 'desc': desc})
-            ))
             last_weather = now
+            try:
+                weather.fetch(on_update=lambda icon, desc: _broadcast(
+                    json.dumps({'type': 'weather', 'icon': icon, 'desc': desc})
+                ))
+            except Exception:
+                traceback.print_exc()
         if now - last_tick >= CONTROL_DT:
-            _tick()
             last_tick = now
+            try:
+                _tick()
+            except Exception:
+                traceback.print_exc()
         time.sleep(10)
 
 
@@ -196,6 +216,7 @@ def api_stream():
                 "history": list(history.room_history),
                 "state_events": list(history.state_events),
                 "weather": weather.cache,
+                "bus": _bus_health(),
             }
         yield f"data: {json.dumps(snap)}\n\n"
         try:
@@ -220,6 +241,12 @@ def api_stream():
 
 if __name__ == "__main__":
     import argparse
+    import sys
+
+    # All diagnostics are plain print() to stdout, which is block-buffered when
+    # the app runs with its output redirected to a file. Line-buffer it so a
+    # fault shows up in the log while it is happening.
+    sys.stdout.reconfigure(line_buffering=True)
 
     _VALID_STATES = ["DHW", "DHW_WAIT", "SUPPRESSED", "IDLE", "RUNNING", "RESTING"]
     parser = argparse.ArgumentParser(description="Therminus heat pump controller")

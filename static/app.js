@@ -35,7 +35,25 @@ function applyWeather(w) {
   document.getElementById('weather-icon').textContent = w.icon ?? '🌡️';
   document.getElementById('weather-desc').textContent = w.desc ?? '';
 }
+// ── Bus health ────────────────────────────────────────────────────────────────
+// Contact with the heat pump, as reported by the server. When it's gone the
+// state we're showing is stale, so say so rather than let a frozen "Idle" pass
+// for a working pump. The server decides when a run of failures counts as a
+// fault; 'failures' is the number of missed one-minute ticks.
+let bus = null;
+function applyBus(msg) {
+  if (msg.bus) bus = msg.bus;
+}
+function busLost() {
+  return bus != null && !bus.ok;
+}
+
 function applyStatusSentence(msg) {
+  if (busLost()) {
+    document.getElementById('status-sentence').textContent =
+      `No contact with the heat pump for ${bus.failures} minutes.`;
+    return;
+  }
   if (msg.status_sentence != null)
     document.getElementById('status-sentence').textContent = msg.status_sentence;
 }
@@ -129,7 +147,7 @@ function applyState(msg) {
   //   document.getElementById('action-badge').className = msg.badge.cls;
   //   document.getElementById('action-label').textContent = msg.badge.label;
     document.getElementById('status-dot').className =
-      'status-dot ' + (msg.badge.active ? 'ok' : '');
+      'status-dot ' + (busLost() ? 'err' : msg.badge.active ? 'ok' : '');
   }
   if (msg.state) {
     const el = document.getElementById('info-state');
@@ -161,6 +179,7 @@ function connectSSE() {
         chart.data.datasets[0].data.push({ x: new Date(p.ts.replace('T',' ')), y: p.value });
       stateEvents = msg.state_events || [];
       refreshAnnotations();
+      applyBus(msg);
       applyState(msg);
       if (msg.last_write) applyState(msg);
       applyWeather(msg.weather);
@@ -175,6 +194,7 @@ function connectSSE() {
       } else {
         chart.update('none');
       }
+      applyBus(msg);
       applyState(msg);
       applyStatusSentence(msg);
       if (msg.wrote) lastWriteTime = new Date(msg.ts.replace('T',' '));

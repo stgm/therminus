@@ -16,6 +16,41 @@ All mutable state is protected by state_lock (threading.Lock). Ebus reads
 are intentionally performed *outside* the lock to avoid blocking it during
 I/O, then the results are read inside _control_tick under the lock.
 
+Surviving a bad bus
+-------------------
+When ebusd stalls, the failure must not take the controller with it. If the
+background thread dies, Flask keeps serving and the page keeps showing the
+last known state while the pump is no longer being controlled at all — the
+worst failure mode this app has. Two rules prevent that.
+
+First, nothing escapes the background loop: _background_refresh guards the
+weather refresh and the control tick separately and prints a traceback
+instead of letting either one end the thread.
+
+Second, ebus calls are bounded by a three-level timeout ladder, each level a
+backstop for the one below it:
+
+  socket (EBUS_SOCKET_TIMEOUT)  pyebus gives up on a single request that
+                                gets no response.
+  op     (EBUS_OP_TIMEOUT)      the whole coroutine is cancelled inside the
+                                asyncio loop, where its cleanup still runs.
+  call   (EBUS_CALL_TIMEOUT)    the calling thread stops waiting. Only
+                                reached if the loop itself is wedged, so it
+                                is larger than the op timeout; the future is
+                                cancelled so abandoned work does not pile up
+                                behind the next call.
+
+Each call reconnects: pyebus can get confused after a period of no signal, so
+_get_ebus() builds a fresh Ebus every time and disconnects the previous one,
+including any left behind by a cancelled call.
+
+A failed telemetry read is counted, not raised — read_telemetry() returns an
+empty Telemetry and the controller sits still, because controller.tick() is
+gated on has_all_data() and writes nothing without a full picture. After
+BUS_FAULT_AFTER consecutive failures ebus.bus_healthy() goes False, which the
+UI shows as a red status dot and a "no contact" sentence, so a blind
+controller cannot be mistaken for an idle one.
+
 Control strategy
 ----------------
 The pump is controlled by writing a fake room-temperature setpoint
